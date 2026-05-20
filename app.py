@@ -3,6 +3,8 @@ import csv
 import io
 import json
 import os
+import re
+import time
 import webbrowser
 from pathlib import Path
 from threading import Timer
@@ -13,6 +15,13 @@ from flask import Flask, jsonify, render_template, request
 # ── 配置常量 ──────────────────────────────────────────────
 BILINOTE_BASE_URL = os.getenv("BILINOTE_URL", "http://localhost:3015")
 GUI_PORT = int(os.getenv("GUI_PORT", "8765"))
+OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "./output"))
+_CHECKPOINT_FILE = "_已处理.json"
+
+# ── 内存状态 ──────────────────────────────────────────────
+_task_map: dict = {}           # task_id -> {bvid, title, folder}
+_completed_tasks: set = set()  # 已保存文件的 task_id
+_processed_bvids: set = set()  # 已成功处理的 BV 号
 
 # ── Flask 应用 ────────────────────────────────────────────
 app = Flask(__name__)
@@ -83,6 +92,81 @@ def check_connection():
         return jsonify({"connected": False})
 
 
+# ── Phase 2: 批量处理端点 ─────────────────────────────────
+
+@app.route("/api/process-video", methods=["POST"])
+def process_video():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "无效的请求数据"}), 400
+
+    bvid = data.get("bvid", "")
+    title = data.get("title", "")
+    folder = data.get("folder", "未分类")
+    url = data.get("url", f"https://www.bilibili.com/video/{bvid}")
+
+    params = {
+        "video_url": url,
+        "platform": "bilibili",
+        "quality": "medium",
+        "model_name": data.get("model_name", ""),
+        "provider_id": data.get("provider_id", ""),
+        "style": data.get("style", "detailed"),
+        "extras": data.get("extras", ""),
+    }
+
+    try:
+        resp = requests.post(
+            f"{BILINOTE_BASE_URL}/api/generate_note", json=params, timeout=10
+        )
+        resp.raise_for_status()
+        task_id = resp.json().get("task_id", "")
+        _task_map[task_id] = {"bvid": bvid, "title": title, "folder": folder}
+        return jsonify({"task_id": task_id})
+    except requests.RequestException as e:
+        app.logger.error("提交到 BiliNote 失败: %s", e)
+        return jsonify({"error": f"提交到 BiliNote 失败: {e}"}), 502
+
+
+@app.route("/api/task-status/<task_id>")
+def task_status(task_id):
+    try:
+        resp = requests.get(
+            f"{BILINOTE_BASE_URL}/api/task_status/{task_id}", timeout=5
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as e:
+        return jsonify({"status": "UNKNOWN", "error": str(e)}), 502
+
+    status = data.get("status", "UNKNOWN")
+    result = data.get("result") or {}
+
+    if status == "SUCCESS" and task_id not in _completed_tasks:
+        _completed_tasks.add(task_id)
+        ctx = _task_map.get(task_id, {})
+        try:
+            files = save_video_output(
+                ctx.get("folder", "未分类"),
+                ctx.get("bvid", ""),
+                ctx.get("title", ""),
+                result,
+                OUTPUT_DIR,
+            )
+            data["files"] = files
+            update_checkpoint(ctx.get("bvid", ""), "SUCCESS", task_id)
+        except Exception as e:
+            app.logger.error("保存文件失败: %s", e)
+            data["file_error"] = str(e)
+
+    return jsonify(data)
+
+
+@app.route("/api/checkpoint")
+def get_checkpoint():
+    return jsonify({"processed": sorted(list(_processed_bvids))})
+
+
 # ── 文件解析函数 ──────────────────────────────────────────
 
 # CSV 列名别名映射（Pitfall 1: Bilishelf CSV 列名不确定）
@@ -95,7 +179,6 @@ _COLUMN_MAP = {
 
 
 def _find_col(row_keys, aliases):
-    """在 CSV 行键中查找匹配别名列表的第一个列名"""
     for alias in aliases:
         for key in row_keys:
             if key.strip() == alias:
@@ -104,7 +187,6 @@ def _find_col(row_keys, aliases):
 
 
 def parse_bilishelf_json(content):
-    """解析 Bilishelf JSON 格式的收藏数据"""
     data = json.loads(content)
     videos = []
     for folder in data.get("folders", []):
@@ -120,7 +202,6 @@ def parse_bilishelf_json(content):
 
 
 def parse_bilishelf_csv(content):
-    """解析 Bilishelf CSV 格式的收藏数据（支持列名别名）"""
     f = io.StringIO(content)
     reader = csv.DictReader(f)
     if reader.fieldnames is None:
@@ -146,10 +227,92 @@ def parse_bilishelf_csv(content):
     return videos
 
 
+# ── Phase 2: 工具函数 ─────────────────────────────────────
+
+def sanitize_filename(name, max_len=80):
+    """过滤非法字符并截断文件名"""
+    result = re.sub(r'[\\/:*?"<>|]', '_', name)
+    result = result.strip(". ")
+    if len(result) > max_len:
+        result = result[:max_len].rstrip("_ ")
+    return result or "untitled"
+
+
+def save_video_output(folder_name, bvid, title, result, output_dir):
+    """保存视频笔记到磁盘，每个视频 3 个文件"""
+    safe_folder = sanitize_filename(folder_name, max_len=60)
+    safe_title = sanitize_filename(title, max_len=80)
+    base_name = f"{bvid} - {safe_title}"
+    dest_dir = output_dir / safe_folder
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    md_content = result.get("markdown", "") or ""
+    transcript = result.get("transcript", {}) or {}
+    full_text = transcript.get("full_text", "") or ""
+
+    paths = {}
+
+    md_path = dest_dir / f"{base_name}.md"
+    md_path.write_text(md_content, encoding="utf-8")
+    paths["md"] = str(md_path)
+
+    txt_path = dest_dir / f"{base_name}_原文.txt"
+    txt_path.write_text(full_text, encoding="utf-8")
+    paths["txt"] = str(txt_path)
+
+    json_path = dest_dir / f"{base_name}_完整.json"
+    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    paths["json"] = str(json_path)
+
+    return paths
+
+
+def load_checkpoint(output_dir=None):
+    """从磁盘加载已处理记录"""
+    if output_dir is None:
+        output_dir = OUTPUT_DIR
+    path = output_dir / _CHECKPOINT_FILE
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        app.logger.warning("Checkpoint 文件损坏，将从头开始")
+        return {}
+
+
+def update_checkpoint(bvid, status, task_id, output_dir=None):
+    """原子写入已处理记录到 checkpoint 文件"""
+    if output_dir is None:
+        output_dir = OUTPUT_DIR
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / _CHECKPOINT_FILE
+
+    records = load_checkpoint(output_dir)
+    records[bvid] = {
+        "task_id": task_id,
+        "status": status,
+        "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(str(tmp), str(path))
+
+
+# ── 模块初始化：加载 checkpoint ───────────────────────────
+_checkpoint_data = load_checkpoint()
+for _bvid, _rec in _checkpoint_data.items():
+    if _rec.get("status") == "SUCCESS":
+        _processed_bvids.add(_bvid)
+app.logger.info("从 checkpoint 加载了 %d 个已处理视频", len(_processed_bvids))
+
+
 # ── 启动入口 ──────────────────────────────────────────────
 if __name__ == "__main__":
     Timer(1, lambda: webbrowser.open(f"http://localhost:{GUI_PORT}")).start()
     print(f"[*] BiliNote Batch Tool 启动中...")
     print(f"[*] 访问 http://localhost:{GUI_PORT}")
     print(f"[*] BiliNote: {BILINOTE_BASE_URL}")
+    print(f"[*] 输出目录: {OUTPUT_DIR.resolve()}")
     app.run(host="127.0.0.1", port=GUI_PORT, debug=False)
