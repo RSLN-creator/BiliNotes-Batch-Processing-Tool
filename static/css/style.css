@@ -378,3 +378,18 @@ textarea {
     color: var(--text-muted);
     font-size: 0.875rem;
 }
+
+.empty-title {
+    font-size: 1.0625rem;
+    color: var(--text-primary);
+    margin-bottom: var(--spacing-md);
+}
+
+.empty-guide {
+    text-align: left;
+    max-width: 440px;
+    margin: 0 auto;
+    color: var(--text-secondary);
+    line-height: 2;
+    padding-left: 1.5em;
+}
