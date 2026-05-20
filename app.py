@@ -61,12 +61,20 @@ def parse_file():
 
 # ── BiliNote API 代理端点 ─────────────────────────────────
 
+def _bili_get(path, timeout=5):
+    """调用 BiliNote GET API，返回 (connected, data_list)"""
+    resp = requests.get(f"{BILINOTE_BASE_URL}{path}", timeout=timeout)
+    body = resp.json()
+    if body.get("code") == 0:
+        return True, body.get("data", [])
+    return True, []
+
+
 @app.route("/api/providers")
 def get_providers():
     try:
-        resp = requests.get(f"{BILINOTE_BASE_URL}/api/providers", timeout=5)
-        resp.raise_for_status()
-        return jsonify({"connected": True, "providers": resp.json()})
+        connected, providers = _bili_get("/api/get_all_providers")
+        return jsonify({"connected": connected, "providers": providers})
     except requests.RequestException:
         return jsonify({"connected": False, "providers": [], "error": "无法连接 BiliNote 服务"})
 
@@ -74,11 +82,8 @@ def get_providers():
 @app.route("/api/providers/<provider_id>/models")
 def get_provider_models(provider_id):
     try:
-        resp = requests.get(
-            f"{BILINOTE_BASE_URL}/api/providers/{provider_id}/models", timeout=5
-        )
-        resp.raise_for_status()
-        return jsonify({"connected": True, "models": resp.json()})
+        connected, models = _bili_get(f"/api/model_enable/{provider_id}")
+        return jsonify({"connected": connected, "models": models})
     except requests.RequestException:
         return jsonify({"connected": False, "models": [], "error": "无法连接 BiliNote 服务"})
 
@@ -86,8 +91,8 @@ def get_provider_models(provider_id):
 @app.route("/api/check-connection")
 def check_connection():
     try:
-        resp = requests.get(f"{BILINOTE_BASE_URL}/api/providers", timeout=3)
-        return jsonify({"connected": resp.ok})
+        connected, _ = _bili_get("/api/task_status/test", timeout=3)
+        return jsonify({"connected": connected})
     except requests.RequestException:
         return jsonify({"connected": False})
 
@@ -111,16 +116,25 @@ def process_video():
         "quality": "medium",
         "model_name": data.get("model_name", ""),
         "provider_id": data.get("provider_id", ""),
+        "format": ["markdown"],
         "style": data.get("style", "detailed"),
-        "extras": data.get("extras", ""),
+        "screenshot": False,
+        "link": False,
+        "video_understanding": False,
     }
+    if data.get("extras"):
+        params["extras"] = data["extras"]
 
     try:
         resp = requests.post(
             f"{BILINOTE_BASE_URL}/api/generate_note", json=params, timeout=10
         )
-        resp.raise_for_status()
-        task_id = resp.json().get("task_id", "")
+        body = resp.json()
+        if body.get("code") != 0:
+            code = body.get("code", -1)
+            msg = body.get("msg", "未知错误")
+            return jsonify({"error": f"BiliNote API 错误 (code={code}): {msg}"}), 502
+        task_id = body["data"]["task_id"]
         _task_map[task_id] = {"bvid": bvid, "title": title, "folder": folder}
         return jsonify({"task_id": task_id})
     except requests.RequestException as e:
@@ -134,13 +148,14 @@ def task_status(task_id):
         resp = requests.get(
             f"{BILINOTE_BASE_URL}/api/task_status/{task_id}", timeout=5
         )
-        resp.raise_for_status()
-        data = resp.json()
+        body = resp.json()
+        if body.get("code") != 0:
+            return jsonify({"status": "ERROR", "error": body.get("msg", "")})
+        inner = body.get("data", {})
+        status = inner.get("status", "PENDING")
+        result = inner.get("result") or {}
     except requests.RequestException as e:
         return jsonify({"status": "UNKNOWN", "error": str(e)}), 502
-
-    status = data.get("status", "UNKNOWN")
-    result = data.get("result") or {}
 
     if status == "SUCCESS" and task_id not in _completed_tasks:
         _completed_tasks.add(task_id)
@@ -153,13 +168,13 @@ def task_status(task_id):
                 result,
                 OUTPUT_DIR,
             )
-            data["files"] = files
+            inner["files"] = files
             update_checkpoint(ctx.get("bvid", ""), "SUCCESS", task_id)
         except Exception as e:
             app.logger.error("保存文件失败: %s", e)
-            data["file_error"] = str(e)
+            inner["file_error"] = str(e)
 
-    return jsonify(data)
+    return jsonify(inner)
 
 
 @app.route("/api/checkpoint")
@@ -169,12 +184,11 @@ def get_checkpoint():
 
 # ── 文件解析函数 ──────────────────────────────────────────
 
-# CSV 列名别名映射（Pitfall 1: Bilishelf CSV 列名不确定）
 _COLUMN_MAP = {
     "bvid": ["bvid", "bvid", "BV号", "BV", "avid", "aid"],
     "title": ["title", "标题", "视频标题", "name"],
     "folder": ["folder", "folders", "收藏夹", "folder_title", "folder_name"],
-    "url": ["url", "链接", "video_url", "page_url"],
+    "url": ["url", "链接", "video_url", "page_url", "bvidUrl"],
 }
 
 
@@ -186,22 +200,41 @@ def _find_col(row_keys, aliases):
     return None
 
 
+def _clean_folder_name(name):
+    """去掉 '0-竞赛！' 类的数字前缀"""
+    if name and name[0].isdigit():
+        return name.split("-", 1)[-1] if "-" in name else name
+    return name
+
+
 def parse_bilishelf_json(content):
+    """解析 Bilishelf JSON — videos 在顶层，通过 folderId 关联收藏夹"""
     data = json.loads(content)
+
+    # 构建 folderId → 文件夹名 映射
+    folder_map = {}
+    for f in data.get("folders", []):
+        name = _clean_folder_name(f.get("name", ""))
+        folder_map[f["id"]] = name or "默认"
+
+    # videos 在顶层
     videos = []
-    for folder in data.get("folders", []):
-        folder_name = folder.get("title", "未分类")
-        for video in folder.get("videos", []):
-            videos.append({
-                "bvid": video.get("bvid", ""),
-                "title": video.get("title", ""),
-                "url": video.get("url", ""),
-                "folder": folder_name,
-            })
+    for v in data.get("videos", []):
+        bvid = (v.get("bvid") or "").strip()
+        if not bvid:
+            continue
+        fid = v.get("folderId", v.get("folder_id", 1))
+        videos.append({
+            "bvid": bvid,
+            "title": (v.get("title") or "").strip(),
+            "url": v.get("bvidUrl", f"https://www.bilibili.com/video/{bvid}/"),
+            "folder": folder_map.get(fid, "默认"),
+        })
     return videos
 
 
 def parse_bilishelf_csv(content):
+    """解析 Bilishelf CSV — 支持列名别名和数字前缀清理"""
     f = io.StringIO(content)
     reader = csv.DictReader(f)
     if reader.fieldnames is None:
@@ -218,11 +251,17 @@ def parse_bilishelf_csv(content):
 
     videos = []
     for row in reader:
+        bvid = (row.get(col_bvid, "") or "").strip()
+        if not bvid:
+            continue
+        folder = (row.get(col_folder, "") or "").strip() if col_folder else ""
+        folder = _clean_folder_name(folder) or "未分类"
+        url = (row.get(col_url, "") or "").strip() if col_url else f"https://www.bilibili.com/video/{bvid}/"
         videos.append({
-            "bvid": (row.get(col_bvid, "") or "").strip(),
+            "bvid": bvid,
             "title": (row.get(col_title, "") or "").strip() if col_title else "",
-            "folder": (row.get(col_folder, "") or "").strip() if col_folder else "未分类",
-            "url": (row.get(col_url, "") or "").strip() if col_url else "",
+            "folder": folder,
+            "url": url,
         })
     return videos
 
@@ -230,7 +269,6 @@ def parse_bilishelf_csv(content):
 # ── Phase 2: 工具函数 ─────────────────────────────────────
 
 def sanitize_filename(name, max_len=80):
-    """过滤非法字符并截断文件名"""
     result = re.sub(r'[\\/:*?"<>|]', '_', name)
     result = result.strip(". ")
     if len(result) > max_len:
@@ -239,7 +277,6 @@ def sanitize_filename(name, max_len=80):
 
 
 def save_video_output(folder_name, bvid, title, result, output_dir):
-    """保存视频笔记到磁盘，每个视频 3 个文件"""
     safe_folder = sanitize_filename(folder_name, max_len=60)
     safe_title = sanitize_filename(title, max_len=80)
     base_name = f"{bvid} - {safe_title}"
@@ -251,7 +288,6 @@ def save_video_output(folder_name, bvid, title, result, output_dir):
     full_text = transcript.get("full_text", "") or ""
 
     paths = {}
-
     md_path = dest_dir / f"{base_name}.md"
     md_path.write_text(md_content, encoding="utf-8")
     paths["md"] = str(md_path)
@@ -268,7 +304,6 @@ def save_video_output(folder_name, bvid, title, result, output_dir):
 
 
 def load_checkpoint(output_dir=None):
-    """从磁盘加载已处理记录"""
     if output_dir is None:
         output_dir = OUTPUT_DIR
     path = output_dir / _CHECKPOINT_FILE
@@ -282,7 +317,6 @@ def load_checkpoint(output_dir=None):
 
 
 def update_checkpoint(bvid, status, task_id, output_dir=None):
-    """原子写入已处理记录到 checkpoint 文件"""
     if output_dir is None:
         output_dir = OUTPUT_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -315,4 +349,9 @@ if __name__ == "__main__":
     print(f"[*] 访问 http://localhost:{GUI_PORT}")
     print(f"[*] BiliNote: {BILINOTE_BASE_URL}")
     print(f"[*] 输出目录: {OUTPUT_DIR.resolve()}")
-    app.run(host="127.0.0.1", port=GUI_PORT, debug=False)
+    try:
+        app.run(host="127.0.0.1", port=GUI_PORT, debug=False)
+    except OSError as e:
+        print(f"\n[!] 端口 {GUI_PORT} 已被占用，请关闭占用进程后重试")
+        print(f"    错误详情: {e}")
+        import sys; sys.exit(1)
