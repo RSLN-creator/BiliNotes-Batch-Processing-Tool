@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BiliNote 批量收藏转写</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<div id="banner" class="banner hidden"></div>
+
+<div class="container">
+    <header class="header">
+        <h1>BiliNote 批量收藏转写</h1>
+        <div class="file-section">
+            <button id="select-file-btn" class="btn btn-primary">选择收藏文件</button>
+            <input type="file" id="file-input" accept=".json,.csv" hidden>
+            <span id="file-name" class="file-name"></span>
+        </div>
+    </header>
+
+    <section class="config-section">
+        <div class="config-row">
+            <div class="config-group">
+                <label for="provider-select">供应商</label>
+                <select id="provider-select">
+                    <option value="">-- 请先加载文件 --</option>
+                </select>
+            </div>
+            <div class="config-group">
+                <label for="model-select">模型</label>
+                <select id="model-select" disabled>
+                    <option value="">-- 请先选择供应商 --</option>
+                </select>
+            </div>
+        </div>
+        <div class="config-row">
+            <div class="config-group">
+                <label for="style-select">笔记风格</label>
+                <select id="style-select">
+                    <option value="detailed">详细笔记</option>
+                    <option value="summary">简洁摘要</option>
+                    <option value="mindmap">思维导图式</option>
+                    <option value="study">学习笔记</option>
+                    <option value="technical">技术文档</option>
+                </select>
+            </div>
+            <div class="config-group">
+                <label for="prompt-input">额外提示词（可选）</label>
+                <textarea id="prompt-input" placeholder="输入额外的笔记生成提示 …"></textarea>
+            </div>
+        </div>
+    </section>
+
+    <section class="video-section">
+        <div class="video-header">
+            <h2>视频列表</h2>
+            <span id="video-count" class="video-count">共 0 个视频</span>
+        </div>
+        <div id="video-list" class="video-list">
+            <div class="empty-state">请先选择收藏文件</div>
+        </div>
+    </section>
+</div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
