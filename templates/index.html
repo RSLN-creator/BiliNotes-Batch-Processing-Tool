@@ -39,16 +39,35 @@
             <div class="config-group">
                 <label for="style-select">笔记风格</label>
                 <select id="style-select">
-                    <option value="detailed">详细笔记</option>
-                    <option value="summary">简洁摘要</option>
-                    <option value="mindmap">思维导图式</option>
-                    <option value="study">学习笔记</option>
-                    <option value="technical">技术文档</option>
+                    <option value="detailed">详细笔记（默认）</option>
+                    <option value="concise">简洁摘要</option>
+                    <option value="detailed">思维导图式</option>
+                    <option value="detailed">学习笔记</option>
+                    <option value="detailed">技术文档风格</option>
                 </select>
             </div>
             <div class="config-group">
-                <label for="prompt-input">额外提示词（可选）</label>
-                <textarea id="prompt-input" placeholder="输入额外的笔记生成提示 …"></textarea>
+                <label for="prompt-input">额外提示词</label>
+                <textarea id="prompt-input" placeholder="自定义提示词（可选）" rows="2"></textarea>
+            </div>
+        </div>
+        <div class="config-row options-row">
+            <div class="config-group">
+                <label>BiliNote 生成选项</label>
+                <div class="checkbox-group">
+                    <label class="cb-label"><input type="checkbox" id="opt-screenshot"> 视频截图</label>
+                    <label class="cb-label"><input type="checkbox" id="opt-link"> 标注链接</label>
+                    <label class="cb-label"><input type="checkbox" id="opt-video-understanding"> 视频理解</label>
+                </div>
+            </div>
+            <div class="config-group">
+                <label>保存内容</label>
+                <div class="checkbox-group">
+                    <label class="cb-label"><input type="checkbox" id="save-md" checked> 笔记 Markdown</label>
+                    <label class="cb-label"><input type="checkbox" id="save-txt" checked> 原文/字幕</label>
+                    <label class="cb-label"><input type="checkbox" id="save-json" checked> 完整 JSON</label>
+                    <label class="cb-label"><input type="checkbox" id="save-mindmap"> 思维导图</label>
+                </div>
             </div>
         </div>
     </section>
@@ -67,6 +86,7 @@
                 <div style="display:flex;gap:8px;">
                     <button id="start-btn" class="btn btn-primary">开始批量处理</button>
                     <button id="stop-btn" class="btn btn-danger" disabled>停止</button>
+                    <button id="bilinote-link-btn" class="btn btn-sm" style="background:var(--bg-tertiary);color:var(--text-secondary)" title="打开 BiliNote">打开 BiliNote</button>
                 </div>
             </div>
         </div>

@@ -97,6 +97,30 @@ def check_connection():
         return jsonify({"connected": False})
 
 
+@app.route("/api/pick-directory")
+def pick_directory():
+    """Windows 原生文件夹选择对话框"""
+    import subprocess
+    try:
+        ps_cmd = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "$f = New-Object System.Windows.Forms.FolderBrowserDialog; "
+            "$f.Description = '选择输出目录'; "
+            "$f.ShowDialog() | Out-Null; "
+            "$f.SelectedPath"
+        )
+        result = subprocess.run(
+            ["powershell", "-Command", ps_cmd],
+            capture_output=True, text=True, timeout=30,
+        )
+        path = result.stdout.strip()
+        if path:
+            return jsonify({"path": path})
+        return jsonify({"path": None})
+    except Exception:
+        return jsonify({"path": None})
+
+
 # ── Phase 2: 批量处理端点 ─────────────────────────────────
 
 @app.route("/api/process-video", methods=["POST"])
@@ -109,18 +133,20 @@ def process_video():
     title = data.get("title", "")
     folder = data.get("folder", "未分类")
     url = data.get("url", f"https://www.bilibili.com/video/{bvid}")
+    output_dir = Path(data.get("output_dir", str(OUTPUT_DIR)))
+    save_opts = data.get("save_options", ["markdown", "transcript", "json"])
 
     params = {
         "video_url": url,
         "platform": "bilibili",
-        "quality": "medium",
+        "quality": data.get("quality", "medium"),
         "model_name": data.get("model_name", ""),
         "provider_id": data.get("provider_id", ""),
-        "format": ["markdown"],
+        "format": data.get("format", ["markdown"]),
         "style": data.get("style", "detailed"),
-        "screenshot": False,
-        "link": False,
-        "video_understanding": False,
+        "screenshot": data.get("screenshot", False),
+        "link": data.get("link", False),
+        "video_understanding": data.get("video_understanding", False),
     }
     if data.get("extras"):
         params["extras"] = data["extras"]
@@ -135,7 +161,10 @@ def process_video():
             msg = body.get("msg", "未知错误")
             return jsonify({"error": f"BiliNote API 错误 (code={code}): {msg}"}), 502
         task_id = body["data"]["task_id"]
-        _task_map[task_id] = {"bvid": bvid, "title": title, "folder": folder}
+        _task_map[task_id] = {
+            "bvid": bvid, "title": title, "folder": folder,
+            "output_dir": str(output_dir), "save_opts": save_opts,
+        }
         return jsonify({"task_id": task_id})
     except requests.RequestException as e:
         app.logger.error("提交到 BiliNote 失败: %s", e)
@@ -166,10 +195,12 @@ def task_status(task_id):
                 ctx.get("bvid", ""),
                 ctx.get("title", ""),
                 result,
-                OUTPUT_DIR,
+                Path(ctx.get("output_dir", str(OUTPUT_DIR))),
+                ctx.get("save_opts", ["markdown", "transcript", "json"]),
             )
             inner["files"] = files
-            update_checkpoint(ctx.get("bvid", ""), "SUCCESS", task_id)
+            update_checkpoint(ctx.get("bvid", ""), "SUCCESS", task_id,
+                              Path(ctx.get("output_dir", str(OUTPUT_DIR))))
         except Exception as e:
             app.logger.error("保存文件失败: %s", e)
             inner["file_error"] = str(e)
@@ -276,29 +307,44 @@ def sanitize_filename(name, max_len=80):
     return result or "untitled"
 
 
-def save_video_output(folder_name, bvid, title, result, output_dir):
+def save_video_output(folder_name, bvid, title, result, output_dir, save_opts=None):
+    """保存视频笔记 —— 每个视频独立子目录"""
+    if save_opts is None:
+        save_opts = ["markdown", "transcript", "json"]
     safe_folder = sanitize_filename(folder_name, max_len=60)
     safe_title = sanitize_filename(title, max_len=80)
-    base_name = f"{bvid} - {safe_title}"
-    dest_dir = output_dir / safe_folder
+    dir_name = f"{bvid} - {safe_title}"
+    dest_dir = output_dir / safe_folder / dir_name
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    md_content = result.get("markdown", "") or ""
-    transcript = result.get("transcript", {}) or {}
-    full_text = transcript.get("full_text", "") or ""
-
     paths = {}
-    md_path = dest_dir / f"{base_name}.md"
-    md_path.write_text(md_content, encoding="utf-8")
-    paths["md"] = str(md_path)
-
-    txt_path = dest_dir / f"{base_name}_原文.txt"
-    txt_path.write_text(full_text, encoding="utf-8")
-    paths["txt"] = str(txt_path)
-
-    json_path = dest_dir / f"{base_name}_完整.json"
-    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    paths["json"] = str(json_path)
+    # Markdown 笔记
+    if "markdown" in save_opts:
+        md_content = result.get("markdown", "") or ""
+        if md_content:
+            md_path = dest_dir / f"笔记.md"
+            md_path.write_text(md_content, encoding="utf-8")
+            paths["md"] = str(md_path)
+    # 原文/字幕
+    if "transcript" in save_opts:
+        transcript = result.get("transcript", {}) or {}
+        full_text = transcript.get("full_text", "") or ""
+        if full_text:
+            txt_path = dest_dir / f"原文.txt"
+            txt_path.write_text(full_text, encoding="utf-8")
+            paths["txt"] = str(txt_path)
+    # 完整 JSON
+    if "json" in save_opts:
+        json_path = dest_dir / f"完整.json"
+        json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        paths["json"] = str(json_path)
+    # 思维导图 (如果 BiliNote 返回了)
+    if "mindmap" in save_opts:
+        mindmap = result.get("mindmap", "") or ""
+        if mindmap:
+            mm_path = dest_dir / f"思维导图.md"
+            mm_path.write_text(mindmap, encoding="utf-8")
+            paths["mindmap"] = str(mm_path)
 
     return paths
 
@@ -306,7 +352,7 @@ def save_video_output(folder_name, bvid, title, result, output_dir):
 def load_checkpoint(output_dir=None):
     if output_dir is None:
         output_dir = OUTPUT_DIR
-    path = output_dir / _CHECKPOINT_FILE
+    path = Path(output_dir) / _CHECKPOINT_FILE
     if not path.exists():
         return {}
     try:
@@ -319,6 +365,7 @@ def load_checkpoint(output_dir=None):
 def update_checkpoint(bvid, status, task_id, output_dir=None):
     if output_dir is None:
         output_dir = OUTPUT_DIR
+    output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / _CHECKPOINT_FILE
 
