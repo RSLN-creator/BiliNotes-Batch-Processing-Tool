@@ -50,6 +50,39 @@ def parse_file():
     return jsonify({"videos": videos, "total": len(videos)})
 
 
+# ── BiliNote API 代理端点 ─────────────────────────────────
+
+@app.route("/api/providers")
+def get_providers():
+    try:
+        resp = requests.get(f"{BILINOTE_BASE_URL}/api/providers", timeout=5)
+        resp.raise_for_status()
+        return jsonify({"connected": True, "providers": resp.json()})
+    except requests.RequestException:
+        return jsonify({"connected": False, "providers": [], "error": "无法连接 BiliNote 服务"})
+
+
+@app.route("/api/providers/<provider_id>/models")
+def get_provider_models(provider_id):
+    try:
+        resp = requests.get(
+            f"{BILINOTE_BASE_URL}/api/providers/{provider_id}/models", timeout=5
+        )
+        resp.raise_for_status()
+        return jsonify({"connected": True, "models": resp.json()})
+    except requests.RequestException:
+        return jsonify({"connected": False, "models": [], "error": "无法连接 BiliNote 服务"})
+
+
+@app.route("/api/check-connection")
+def check_connection():
+    try:
+        resp = requests.get(f"{BILINOTE_BASE_URL}/api/providers", timeout=3)
+        return jsonify({"connected": resp.ok})
+    except requests.RequestException:
+        return jsonify({"connected": False})
+
+
 # ── 文件解析函数 ──────────────────────────────────────────
 
 # CSV 列名别名映射（Pitfall 1: Bilishelf CSV 列名不确定）
