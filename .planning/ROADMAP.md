@@ -17,6 +17,14 @@
 4. 风格预设 + 提示词输入正常
 5. BiliNote 离线时显示连接失败提示
 
+**Plans:** 3 plans
+
+| Plan | Wave | Objective | Tasks | Requirements |
+| --- | --- | --- | --- | --- |
+| 01 | 1 | Walking Skeleton: Flask 服务器 + 深色主题 GUI 容器 | 3 (含 1 checkpoint) | UI-01 |
+| 02 | 2 | 文件解析 + 视频列表展示 | 2 | UI-02, UI-03, CORE-01, CORE-02 |
+| 03 | 3 | BiliNote 集成 + 配置区功能 | 2 | UI-04, UI-05, EDGE-01, EDGE-02 |
+
 **UI hint:** yes
 
 ---
@@ -34,6 +42,8 @@
 4. 已处理视频自动跳过（重启后仍有效）
 5. 输出按收藏夹分目录，每个视频 3 个文件（md + 原文 + json）
 
+**Plans:** TBD
+
 ---
 
 ### Phase 3: 边界处理 + 打磨
@@ -49,12 +59,14 @@
 4. 端口冲突时有明确提示
 5. 无文件时显示引导说明
 
+**Plans:** TBD
+
 ---
 
 ## Requirement Coverage
 
 | REQ-ID | Phase |
-|--------|-------|
+| --- | --- |
 | UI-01, UI-02, UI-03, UI-04, UI-05 | 1 |
 | CORE-01, CORE-02 | 1 |
 | EDGE-01, EDGE-02 | 1 |
@@ -64,3 +76,13 @@
 | EDGE-03, EDGE-04, EDGE-05, EDGE-06, EDGE-07 | 3 |
 
 100% v1 requirements covered ✓
+
+## Traceability — Phase 1
+
+| REQ-ID | Plan | Status |
+| --- | --- | --- |
+| UI-01 | 01 | Pending |
+| UI-02, UI-03 | 02 | Pending |
+| CORE-01, CORE-02 | 02 | Pending |
+| UI-04, UI-05 | 03 | Pending |
+| EDGE-01, EDGE-02 | 03 | Pending |
