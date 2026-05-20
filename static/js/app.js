@@ -8,6 +8,7 @@ const state = {
     videos: [],
     selectedFile: null,
     providers: [],
+    models: [],
 };
 
 /* ── DOM 引用 ──────────────────────────────────────────── */
@@ -31,6 +32,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     selectFileBtn.addEventListener("click", () => fileInput.click());
     fileInput.addEventListener("change", onFileSelected);
+    providerSelect.addEventListener("change", onProviderChanged);
 });
 
 /* ── 文件选择 ──────────────────────────────────────────── */
@@ -68,8 +70,106 @@ async function loadFile(file) {
         state.videos = data.videos;
         renderVideoList(data.videos);
         hideBanner();
+        /* D-04: 文件加载成功后检测 BiliNote 连接 */
+        await loadProviders();
     } catch (err) {
         showBanner("文件读取失败：" + err.message, "error");
+    }
+}
+
+/* ── BiliNote 供应商/模型 ──────────────────────────────── */
+async function onProviderChanged() {
+    const providerId = providerSelect.value;
+    if (!providerId) {
+        modelSelect.disabled = true;
+        modelSelect.innerHTML = '<option value="">-- 请先选择供应商 --</option>';
+        return;
+    }
+
+    modelSelect.innerHTML = '<option value="">加载中...</option>';
+    await loadModels(providerId);
+}
+
+async function loadProviders() {
+    try {
+        const res = await fetch("/api/providers");
+        const data = await res.json();
+
+        if (!data.connected) {
+            showBanner("无法连接 BiliNote，请确认服务已启动", "warning");
+            providerSelect.innerHTML = '<option value="">BiliNote 未连接</option>';
+            return;
+        }
+
+        const providers = data.providers || [];
+        if (providers.length === 0) {
+            /* EDGE-02: 供应商未配置 */
+            showBanner("BiliNote 中未配置供应商，请先在 BiliNote 中添加", "warning");
+            providerSelect.innerHTML = '<option value="">暂无供应商</option>';
+            return;
+        }
+
+        hideBanner();
+        state.providers = providers;
+        providerSelect.innerHTML =
+            '<option value="">-- 选择供应商 --</option>' +
+            providers
+                .map(function (p) {
+                    return (
+                        '<option value="' +
+                        p.id +
+                        '">' +
+                        escapeHtml(p.name) +
+                        "</option>"
+                    );
+                })
+                .join("");
+    } catch (err) {
+        showBanner("无法连接 BiliNote：" + err.message, "warning");
+        providerSelect.innerHTML = '<option value="">BiliNote 未连接</option>';
+    }
+}
+
+async function loadModels(providerId) {
+    try {
+        const res = await fetch("/api/providers/" + providerId + "/models");
+        const data = await res.json();
+
+        if (!data.connected) {
+            showBanner("无法连接 BiliNote", "warning");
+            modelSelect.disabled = true;
+            modelSelect.innerHTML = '<option value="">-- 无法获取 --</option>';
+            return;
+        }
+
+        const models = data.models || [];
+        if (models.length === 0) {
+            showBanner("该供应商下无可用模型", "warning");
+            modelSelect.disabled = true;
+            modelSelect.innerHTML = '<option value="">暂无模型</option>';
+            return;
+        }
+
+        hideBanner();
+        state.models = models;
+        modelSelect.disabled = false;
+        modelSelect.innerHTML =
+            '<option value="">-- 选择模型 --</option>' +
+            models
+                .map(function (m) {
+                    return (
+                        '<option value="' +
+                        m.id +
+                        '">' +
+                        escapeHtml(m.name) +
+                        "</option>"
+                    );
+                })
+                .join("");
+    } catch (err) {
+        showBanner("无法连接 BiliNote：" + err.message, "warning");
+        modelSelect.disabled = true;
+        modelSelect.innerHTML = '<option value="">-- 无法获取 --</option>';
     }
 }
 
