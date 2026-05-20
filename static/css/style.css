@@ -88,6 +88,14 @@ body {
     cursor: not-allowed;
 }
 
+.btn-danger {
+    background: var(--error);
+}
+
+.btn-danger:hover {
+    background: #e03131;
+}
+
 /* ── 配置区 ────────────────────────────────────────────── */
 .config-section {
     background: var(--bg-secondary);
@@ -140,12 +148,118 @@ textarea {
     min-height: 64px;
 }
 
+/* ── 输出目录输入框 ────────────────────────────────────── */
+#output-dir {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+    font-size: 0.875rem;
+    font-family: var(--font-mono);
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+#output-dir:focus {
+    border-color: var(--accent);
+}
+
+/* ── 批处理控制区 ──────────────────────────────────────── */
+.batch-section {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--spacing-md);
+    margin-bottom: var(--spacing-md);
+}
+
+.batch-buttons {
+    display: flex;
+    gap: var(--spacing-sm);
+    align-items: flex-end;
+}
+
+/* ── 进度区 ────────────────────────────────────────────── */
+.progress-section {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--spacing-md);
+    margin-top: var(--spacing-md);
+    margin-bottom: var(--spacing-md);
+}
+
+.progress-section h2 {
+    font-size: 1.0625rem;
+    font-weight: 600;
+    margin-bottom: var(--spacing-sm);
+}
+
+.progress-bar-container {
+    width: 100%;
+    height: 8px;
+    background: var(--bg-tertiary);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: var(--spacing-sm);
+}
+
+.progress-bar {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 4px;
+    transition: width 0.3s ease;
+}
+
+.stats-row {
+    display: flex;
+    gap: var(--spacing-lg);
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin-bottom: var(--spacing-sm);
+}
+
+.stats-row strong {
+    color: var(--text-primary);
+}
+
+.stat-success { color: var(--success); }
+.stat-failed { color: var(--error); }
+.stat-skipped { color: var(--warning); }
+
+/* ── 日志区 ────────────────────────────────────────────── */
+.log-area {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--spacing-sm);
+    max-height: 300px;
+    overflow-y: auto;
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+}
+
+.log-entry {
+    padding: 2px 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.log-info { color: var(--text-secondary); }
+.log-success { color: var(--success); }
+.log-error { color: var(--error); }
+.log-skip { color: var(--warning); }
+.log-warning { color: var(--warning); }
+
 /* ── 视频列表区 ────────────────────────────────────────── */
 .video-section {
     background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: var(--spacing-md);
+    margin-top: var(--spacing-md);
 }
 
 .video-header {
@@ -220,6 +334,11 @@ textarea {
 .status-pending {
     color: var(--text-muted);
     background: var(--bg-tertiary);
+}
+
+.status-success {
+    color: var(--success);
+    background: rgba(64, 192, 87, 0.15);
 }
 
 /* ── BV 号 ─────────────────────────────────────────────── */

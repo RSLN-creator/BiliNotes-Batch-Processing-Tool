@@ -53,6 +53,37 @@
         </div>
     </section>
 
+    <section class="batch-section">
+        <div class="config-row">
+            <div class="config-group">
+                <label for="output-dir">输出目录</label>
+                <input type="text" id="output-dir" value="./output">
+            </div>
+            <div class="config-group batch-buttons">
+                <label>&nbsp;</label>
+                <div style="display:flex;gap:8px;">
+                    <button id="start-btn" class="btn btn-primary">开始批量处理</button>
+                    <button id="stop-btn" class="btn btn-danger" disabled>停止</button>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="progress-section" class="progress-section" style="display:none">
+        <h2>处理进度</h2>
+        <div class="progress-bar-container">
+            <div id="progress-bar" class="progress-bar" style="width:0%"></div>
+        </div>
+        <div class="stats-row">
+            <span>总数 <strong id="stat-total">0</strong></span>
+            <span class="stat-success">成功 <strong id="stat-success">0</strong></span>
+            <span class="stat-failed">失败 <strong id="stat-failed">0</strong></span>
+            <span class="stat-skipped">跳过 <strong id="stat-skipped">0</strong></span>
+            <span>当前 <strong id="stat-current">---</strong></span>
+        </div>
+        <div id="log-area" class="log-area"></div>
+    </section>
+
     <section class="video-section">
         <div class="video-header">
             <h2>视频列表</h2>

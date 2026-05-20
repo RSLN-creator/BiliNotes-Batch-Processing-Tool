@@ -9,6 +9,12 @@ const state = {
     selectedFile: null,
     providers: [],
     models: [],
+    running: false,
+    stopRequested: false,
+    processedBvids: new Set(),
+    currentIndex: 0,
+    stats: { total: 0, success: 0, failed: 0, skipped: 0 },
+    outputDir: "./output",
 };
 
 /* ── DOM 引用 ──────────────────────────────────────────── */
@@ -16,6 +22,9 @@ let fileInput, selectFileBtn, fileName;
 let providerSelect, modelSelect, styleSelect, promptInput;
 let videoList, videoCount;
 let banner;
+let startBtn, stopBtn, progressBar, progressSection, logArea;
+let totalSpan, successSpan, failedSpan, skippedSpan, currentSpan;
+let outputDirInput;
 
 /* ── 初始化 ────────────────────────────────────────────── */
 document.addEventListener("DOMContentLoaded", () => {
@@ -29,10 +38,23 @@ document.addEventListener("DOMContentLoaded", () => {
     videoList = $("video-list");
     videoCount = $("video-count");
     banner = $("banner");
+    startBtn = $("start-btn");
+    stopBtn = $("stop-btn");
+    progressBar = $("progress-bar");
+    progressSection = $("progress-section");
+    logArea = $("log-area");
+    totalSpan = $("stat-total");
+    successSpan = $("stat-success");
+    failedSpan = $("stat-failed");
+    skippedSpan = $("stat-skipped");
+    currentSpan = $("stat-current");
+    outputDirInput = $("output-dir");
 
     selectFileBtn.addEventListener("click", () => fileInput.click());
     fileInput.addEventListener("change", onFileSelected);
     providerSelect.addEventListener("change", onProviderChanged);
+    startBtn.addEventListener("click", startBatch);
+    stopBtn.addEventListener("click", stopBatch);
 });
 
 /* ── 文件选择 ──────────────────────────────────────────── */
@@ -68,9 +90,9 @@ async function loadFile(file) {
         }
 
         state.videos = data.videos;
+        await loadCheckpoint();
         renderVideoList(data.videos);
         hideBanner();
-        /* D-04: 文件加载成功后检测 BiliNote 连接 */
         await loadProviders();
     } catch (err) {
         showBanner("文件读取失败：" + err.message, "error");
@@ -103,7 +125,6 @@ async function loadProviders() {
 
         const providers = data.providers || [];
         if (providers.length === 0) {
-            /* EDGE-02: 供应商未配置 */
             showBanner("BiliNote 中未配置供应商，请先在 BiliNote 中添加", "warning");
             providerSelect.innerHTML = '<option value="">暂无供应商</option>';
             return;
@@ -116,11 +137,8 @@ async function loadProviders() {
             providers
                 .map(function (p) {
                     return (
-                        '<option value="' +
-                        p.id +
-                        '">' +
-                        escapeHtml(p.name) +
-                        "</option>"
+                        '<option value="' + p.id + '">' +
+                        escapeHtml(p.name) + "</option>"
                     );
                 })
                 .join("");
@@ -158,11 +176,8 @@ async function loadModels(providerId) {
             models
                 .map(function (m) {
                     return (
-                        '<option value="' +
-                        m.id +
-                        '">' +
-                        escapeHtml(m.name) +
-                        "</option>"
+                        '<option value="' + m.id + '">' +
+                        escapeHtml(m.name) + "</option>"
                     );
                 })
                 .join("");
@@ -181,7 +196,6 @@ function renderVideoList(videos) {
         return;
     }
 
-    /* 按收藏夹分组 */
     const groups = {};
     for (const v of videos) {
         const folder = v.folder || "未分类";
@@ -199,7 +213,11 @@ function renderVideoList(videos) {
             html += "<tr>";
             html += '<td class="bvid">' + escapeHtml(v.bvid) + "</td>";
             html += "<td>" + escapeHtml(v.title) + "</td>";
-            html += '<td><span class="status-badge status-pending">待处理</span></td>';
+            if (state.processedBvids.has(v.bvid)) {
+                html += '<td><span class="status-badge status-success">已处理</span></td>';
+            } else {
+                html += '<td><span class="status-badge status-pending">待处理</span></td>';
+            }
             html += "</tr>";
         }
         html += "</tbody></table></div>";
@@ -224,4 +242,169 @@ function escapeHtml(str) {
     const div = document.createElement("div");
     div.appendChild(document.createTextNode(str));
     return div.innerHTML;
+}
+
+/* ── Phase 2: 批处理 ───────────────────────────────────── */
+
+function sleep(ms) {
+    return new Promise(function (resolve) {
+        setTimeout(resolve, ms);
+    });
+}
+
+async function loadCheckpoint() {
+    try {
+        const res = await fetch("/api/checkpoint");
+        const data = await res.json();
+        state.processedBvids = new Set(data.processed || []);
+    } catch (err) {
+        state.processedBvids = new Set();
+    }
+}
+
+function updateButtons() {
+    startBtn.disabled = state.running;
+    stopBtn.disabled = !state.running;
+}
+
+function updateProgress() {
+    var done = state.stats.success + state.stats.failed + state.stats.skipped;
+    var pct = state.videos.length > 0 ? (done / state.videos.length * 100) : 0;
+    progressBar.style.width = pct + "%";
+    totalSpan.textContent = state.videos.length;
+    successSpan.textContent = state.stats.success;
+    failedSpan.textContent = state.stats.failed;
+    skippedSpan.textContent = state.stats.skipped;
+    currentSpan.textContent = state.running ? (state.currentIndex + 1) : "---";
+}
+
+function addLog(message, level) {
+    var time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+    var entry = document.createElement("div");
+    entry.className = "log-entry log-" + (level || "info");
+    entry.textContent = "[" + time + "] " + message;
+    logArea.appendChild(entry);
+    logArea.scrollTop = logArea.scrollHeight;
+}
+
+async function submitVideo(video) {
+    var body = {
+        bvid: video.bvid,
+        title: video.title,
+        folder: video.folder || "未分类",
+        url: video.url,
+        model_name: modelSelect.value,
+        provider_id: providerSelect.value,
+        style: styleSelect.value,
+        extras: promptInput.value,
+    };
+
+    var res = await fetch("/api/process-video", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    });
+
+    var data = await res.json();
+
+    if (!res.ok) {
+        throw new Error(data.error || "提交失败");
+    }
+
+    return data.task_id;
+}
+
+function pollTaskStatus(taskId, timeoutMs) {
+    timeoutMs = timeoutMs || 900000;
+    return new Promise(function (resolve, reject) {
+        var startTime = Date.now();
+        var interval = setInterval(async function () {
+            try {
+                if (Date.now() - startTime > timeoutMs) {
+                    clearInterval(interval);
+                    reject(new Error("任务超时"));
+                    return;
+                }
+
+                var res = await fetch("/api/task-status/" + taskId);
+                var data = await res.json();
+
+                if (data.status === "SUCCESS" || data.status === "FAILED") {
+                    clearInterval(interval);
+                    resolve(data);
+                }
+            } catch (err) {
+                clearInterval(interval);
+                reject(err);
+            }
+        }, 3000);
+    });
+}
+
+function stopBatch() {
+    state.stopRequested = true;
+    addLog("用户请求停止，完成当前任务后结束...", "warning");
+    stopBtn.disabled = true;
+}
+
+async function startBatch() {
+    if (state.running) return;
+
+    state.running = true;
+    state.stopRequested = false;
+    state.currentIndex = 0;
+
+    var videos = state.videos;
+    state.stats = { total: videos.length, success: 0, failed: 0, skipped: 0 };
+    state.outputDir = outputDirInput.value.trim() || "./output";
+
+    progressSection.style.display = "block";
+    logArea.innerHTML = "";
+    updateButtons();
+    updateProgress();
+    addLog("批量处理开始 — 输出目录: " + state.outputDir, "info");
+
+    for (var i = 0; i < videos.length; i++) {
+        state.currentIndex = i;
+
+        if (!state.running || state.stopRequested) break;
+
+        updateProgress();
+        var video = videos[i];
+
+        if (state.processedBvids.has(video.bvid)) {
+            addLog("[" + (i + 1) + "/" + videos.length + "] 跳过已处理: " + escapeHtml(video.title || video.bvid), "skip");
+            state.stats.skipped++;
+            continue;
+        }
+
+        addLog("[" + (i + 1) + "/" + videos.length + "] " + escapeHtml(video.title || video.bvid), "info");
+
+        try {
+            var taskId = await submitVideo(video);
+            var result = await pollTaskStatus(taskId, 900000);
+
+            if (result.status === "SUCCESS") {
+                addLog("完成: " + escapeHtml(video.title || video.bvid), "success");
+                state.processedBvids.add(video.bvid);
+                state.stats.success++;
+            } else {
+                addLog("失败: " + escapeHtml(video.title || video.bvid), "error");
+                state.stats.failed++;
+            }
+        } catch (err) {
+            addLog("错误: " + escapeHtml(video.title || video.bvid) + " - " + err.message, "error");
+            state.stats.failed++;
+        }
+
+        updateProgress();
+
+        if (i < videos.length - 1 && state.running && !state.stopRequested) {
+            await sleep(3000);
+        }
+    }
+
+    state.running = false;
+    updateButtons();
+    addLog("批量处理结束", "info");
 }
