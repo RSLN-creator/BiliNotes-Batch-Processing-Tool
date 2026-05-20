@@ -55,9 +55,12 @@
 
     <section class="batch-section">
         <div class="config-row">
-            <div class="config-group">
+            <div class="config-group" style="flex:2">
                 <label for="output-dir">输出目录</label>
-                <input type="text" id="output-dir" value="./output">
+                <div class="output-dir-row">
+                    <input type="text" id="output-dir" value="./output">
+                    <button id="pick-dir-btn" class="btn btn-sm">浏览...</button>
+                </div>
             </div>
             <div class="config-group batch-buttons">
                 <label>&nbsp;</label>
@@ -88,6 +91,16 @@
         <div class="video-header">
             <h2>视频列表</h2>
             <span id="video-count" class="video-count">共 0 个视频</span>
+        </div>
+        <div id="video-toolbar" class="video-toolbar" style="display:none">
+            <label class="cb-label"><input type="checkbox" id="select-all"> 全选</label>
+            <input type="text" id="search-input" class="search-input" placeholder="搜索 BV 号或标题...">
+            <select id="status-filter" class="status-filter">
+                <option value="all">全部</option>
+                <option value="pending">待处理</option>
+                <option value="done">已处理</option>
+            </select>
+            <span id="selected-count" class="selected-count"></span>
         </div>
         <div id="video-list" class="video-list">
             <div class="empty-state">
