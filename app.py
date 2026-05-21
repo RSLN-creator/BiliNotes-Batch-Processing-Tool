@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import time
 import webbrowser
 from pathlib import Path
@@ -97,10 +98,33 @@ def check_connection():
         return jsonify({"connected": False})
 
 
+@app.route("/api/transcriber-config")
+def get_transcriber_config():
+    try:
+        resp = requests.get(f"{BILINOTE_BASE_URL}/api/transcriber_config", timeout=5)
+        body = resp.json()
+        if body.get("code") == 0:
+            return jsonify({"connected": True, "data": body.get("data", {})})
+        return jsonify({"connected": True, "data": {}})
+    except requests.RequestException:
+        return jsonify({"connected": False, "data": {}})
+
+
+@app.route("/api/transcriber-models-status")
+def get_transcriber_models_status():
+    try:
+        resp = requests.get(f"{BILINOTE_BASE_URL}/api/transcriber_models_status", timeout=5)
+        body = resp.json()
+        if body.get("code") == 0:
+            return jsonify({"connected": True, "data": body.get("data", {})})
+        return jsonify({"connected": True, "data": {}})
+    except requests.RequestException:
+        return jsonify({"connected": False, "data": {}})
+
+
 @app.route("/api/pick-directory")
 def pick_directory():
     """Windows 原生文件夹选择对话框"""
-    import subprocess
     try:
         ps_cmd = (
             "Add-Type -AssemblyName System.Windows.Forms; "
@@ -189,6 +213,11 @@ def task_status(task_id):
     if status == "SUCCESS" and task_id not in _completed_tasks:
         _completed_tasks.add(task_id)
         ctx = _task_map.get(task_id, {})
+        transcript_info = result.get("transcript") or {}
+        transcript_lang = ""
+        if isinstance(transcript_info, dict):
+            transcript_lang = transcript_info.get("language", "")
+        inner["transcript_source"] = "ai_subtitle" if transcript_lang.startswith("ai-") else "local"
         try:
             files = save_video_output(
                 ctx.get("folder", "未分类"),
@@ -199,18 +228,190 @@ def task_status(task_id):
                 ctx.get("save_opts", ["markdown", "transcript", "json"]),
             )
             inner["files"] = files
-            update_checkpoint(ctx.get("bvid", ""), "SUCCESS", task_id,
-                              Path(ctx.get("output_dir", str(OUTPUT_DIR))))
+            update_checkpoint(
+                ctx.get("bvid", ""), "SUCCESS", task_id,
+                Path(ctx.get("output_dir", str(OUTPUT_DIR))),
+                folder=ctx.get("folder", "未分类"),
+                title=ctx.get("title", ""),
+                transcript_source=inner["transcript_source"],
+            )
         except Exception as e:
             app.logger.error("保存文件失败: %s", e)
             inner["file_error"] = str(e)
 
+    if status == "FAILED" and task_id not in _completed_tasks:
+        _completed_tasks.add(task_id)
+        ctx = _task_map.get(task_id, {})
+        update_checkpoint(
+            ctx.get("bvid", ""), "FAILED", task_id,
+            folder=ctx.get("folder", "未分类"),
+            title=ctx.get("title", ""),
+        )
+
     return jsonify(inner)
+
+
+@app.route("/api/force-retranscribe", methods=["POST"])
+def force_retranscribe():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "无效的请求数据"}), 400
+    bvid = data.get("bvid", "")
+    if not bvid:
+        return jsonify({"error": "缺少 bvid"}), 400
+    records = load_checkpoint()
+    rec = records.get(bvid)
+    if not rec:
+        return jsonify({"error": "未找到该视频的处理记录"}), 404
+    task_id = rec.get("task_id", "")
+    deleted = []
+    docker_ok = False
+    if task_id:
+        try:
+            proc = subprocess.run(
+                ["docker", "exec", "bilinote-backend", "rm", "-f",
+                 f"/app/note_results/{task_id}_transcript.json",
+                 f"/app/note_results/{task_id}_audio.json",
+                 f"/app/note_results/{task_id}.json",
+                 f"/app/note_results/{task_id}.status.json"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if proc.returncode == 0:
+                docker_ok = True
+                deleted = [f"{task_id}_transcript.json", f"{task_id}_audio.json",
+                           f"{task_id}.json", f"{task_id}.status.json"]
+            else:
+                app.logger.warning("删除BiliNotes缓存失败, returncode=%d, stderr=%s", proc.returncode, proc.stderr)
+        except Exception as e:
+            app.logger.warning("删除BiliNotes缓存失败: %s", e)
+    if not docker_ok and task_id:
+        return jsonify({"error": "无法删除BiliNotes容器内缓存，请确认Docker容器正在运行", "bvid": bvid}), 503
+    if bvid in records:
+        del records[bvid]
+        _save_checkpoint_file(records)
+    if task_id in _completed_tasks:
+        _completed_tasks.discard(task_id)
+    if task_id in _task_map:
+        del _task_map[task_id]
+    return jsonify({"ok": True, "bvid": bvid, "deleted_cache": deleted})
+
+
+@app.route("/api/backfill-transcript-source", methods=["POST"])
+def backfill_transcript_source():
+    records = load_checkpoint()
+    updated = 0
+    for bvid, rec in records.items():
+        if rec.get("status") != "SUCCESS":
+            continue
+        if rec.get("transcript_source"):
+            continue
+        task_id = rec.get("task_id", "")
+        source = ""
+        output_dir = Path(rec.get("output_dir", str(OUTPUT_DIR)))
+        safe_folder = sanitize_filename(rec.get("folder", "未分类"), max_len=60)
+        safe_title = sanitize_filename(rec.get("title", ""), max_len=80)
+        dir_name = f"{bvid} - {safe_title}"
+        json_path = output_dir / safe_folder / dir_name / "完整.json"
+        if not json_path.exists() and output_dir.exists():
+            for d in output_dir.rglob(bvid + "*"):
+                if d.is_dir():
+                    candidate = d / "完整.json"
+                    if candidate.exists():
+                        json_path = candidate
+                        break
+        if json_path.exists():
+            try:
+                data = json.loads(json_path.read_text(encoding="utf-8"))
+                transcript = data.get("transcript") or {}
+                if isinstance(transcript, dict):
+                    lang = transcript.get("language", "")
+                    source = "ai_subtitle" if lang.startswith("ai-") else "local"
+            except Exception:
+                source = "unknown"
+        if not source and task_id:
+            try:
+                resp = requests.get(
+                    f"{BILINOTE_BASE_URL}/api/task_status/{task_id}", timeout=5
+                )
+                body = resp.json()
+                if body.get("code") == 0:
+                    inner = body.get("data", {})
+                    result = inner.get("result") or {}
+                    transcript_info = result.get("transcript") or {}
+                    if isinstance(transcript_info, dict):
+                        lang = transcript_info.get("language", "")
+                        source = "ai_subtitle" if lang.startswith("ai-") else "local"
+            except Exception:
+                pass
+        if source:
+            rec["transcript_source"] = source
+            updated += 1
+        else:
+            rec["transcript_source"] = "unknown"
+            updated += 1
+    if updated > 0:
+        _save_checkpoint_file(records)
+    return jsonify({"ok": True, "updated": updated, "total": len(records)})
 
 
 @app.route("/api/checkpoint")
 def get_checkpoint():
-    return jsonify({"processed": sorted(list(_processed_bvids))})
+    records = load_checkpoint()
+    return jsonify({"records": records, "processed": sorted([b for b, r in records.items() if r.get("status") == "SUCCESS"])})
+
+
+@app.route("/api/checkpoint/<bvid>", methods=["DELETE"])
+def delete_checkpoint(bvid):
+    records = load_checkpoint()
+    if bvid in records:
+        del records[bvid]
+        _save_checkpoint_file(records)
+        _processed_bvids.discard(bvid)
+        return jsonify({"ok": True})
+    return jsonify({"ok": True})
+
+
+@app.route("/api/open-file")
+def open_local_file():
+    file_path = request.args.get("path", "")
+    if not file_path:
+        return jsonify({"error": "未指定文件路径"}), 400
+    p = Path(file_path)
+    if not p.exists():
+        return jsonify({"error": f"文件不存在: {file_path}"}), 404
+    try:
+        os.startfile(str(p))
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/get-output-files/<bvid>")
+def get_output_files(bvid):
+    records = load_checkpoint()
+    rec = records.get(bvid)
+    if not rec:
+        return jsonify({"files": []})
+    output_dir = Path(rec.get("output_dir", str(OUTPUT_DIR)))
+    safe_folder = sanitize_filename(rec.get("folder", "未分类"), max_len=60)
+    safe_title = sanitize_filename(rec.get("title", ""), max_len=80)
+    dir_name = f"{bvid} - {safe_title}"
+    dest_dir = output_dir / safe_folder / dir_name
+    files = []
+    if dest_dir.exists():
+        for f in dest_dir.iterdir():
+            if f.is_file() and not f.name.startswith("_"):
+                files.append({"name": f.name, "path": str(f.resolve())})
+    if not files and output_dir.exists():
+        for d in output_dir.rglob(bvid + "*"):
+            if d.is_dir():
+                for f in d.iterdir():
+                    if f.is_file() and not f.name.startswith("_"):
+                        files.append({"name": f.name, "path": str(f.resolve())})
+                if files:
+                    dest_dir = d
+                    break
+    return jsonify({"files": files, "dir": str(dest_dir.resolve()) if dest_dir.exists() else ""})
 
 
 # ── 文件解析函数 ──────────────────────────────────────────
@@ -265,37 +466,55 @@ def parse_bilishelf_json(content):
 
 
 def parse_bilishelf_csv(content):
-    """解析 Bilishelf CSV — 支持列名别名和数字前缀清理"""
-    f = io.StringIO(content)
-    reader = csv.DictReader(f)
-    if reader.fieldnames is None:
-        return []
-
-    keys = list(reader.fieldnames)
-    col_bvid = _find_col(keys, _COLUMN_MAP["bvid"])
-    col_title = _find_col(keys, _COLUMN_MAP["title"])
-    col_folder = _find_col(keys, _COLUMN_MAP["folder"])
-    col_url = _find_col(keys, _COLUMN_MAP["url"])
-
+    content = content.lstrip('\ufeff')
+    header_line = content.split('\n', 1)[0]
+    header_fields = _split_csv_row(header_line)
+    col_bvid = _find_col(header_fields, _COLUMN_MAP["bvid"])
+    col_title = _find_col(header_fields, _COLUMN_MAP["title"])
+    col_folder = _find_col(header_fields, _COLUMN_MAP["folder"])
+    col_url = _find_col(header_fields, _COLUMN_MAP["url"])
     if col_bvid is None:
         raise ValueError("CSV 中未找到 BV 号列（尝试匹配: bvid, BV号, BV 等）")
-
+    bvid_idx = header_fields.index(col_bvid)
+    title_idx = header_fields.index(col_title) if col_title else -1
+    url_idx = header_fields.index(col_url) if col_url else -1
+    folder_idx = header_fields.index(col_folder) if col_folder else -1
+    bvid_pattern = re.compile(r'^BV[0-9A-Za-z]{6,}$')
+    bv_positions = [m.start() for m in re.finditer(r'BV[0-9A-Za-z]{10},', content)]
     videos = []
-    for row in reader:
-        bvid = (row.get(col_bvid, "") or "").strip()
-        if not bvid:
+    for i, pos in enumerate(bv_positions):
+        end = bv_positions[i + 1] if i + 1 < len(bv_positions) else len(content)
+        rec = content[pos:end].rstrip().rstrip(',')
+        rec_oneline = rec.replace('\n', ' ').replace('\r', ' ')
+        while '  ' in rec_oneline:
+            rec_oneline = rec_oneline.replace('  ', ' ')
+        row = _split_csv_row(rec_oneline)
+        bvid_val = (row[bvid_idx] if bvid_idx < len(row) else "").strip()
+        if not bvid_val or not bvid_pattern.match(bvid_val):
             continue
-        folder = (row.get(col_folder, "") or "").strip() if col_folder else ""
-        folder = _clean_folder_name(folder) or "未分类"
-        url = (row.get(col_url, "") or "").strip() if col_url else f"https://www.bilibili.com/video/{bvid}/"
-        videos.append({
-            "bvid": bvid,
-            "title": (row.get(col_title, "") or "").strip() if col_title else "",
-            "folder": folder,
-            "url": url,
-        })
+        title_val = (row[title_idx].strip() if title_idx >= 0 and title_idx < len(row) else "")
+        folder_val = (row[folder_idx].strip() if folder_idx >= 0 and folder_idx < len(row) else "")
+        folder_val = _clean_folder_name(folder_val) or "未分类"
+        url_val = (row[url_idx].strip() if url_idx >= 0 and url_idx < len(row) else "") or f"https://www.bilibili.com/video/{bvid_val}/"
+        videos.append({"bvid": bvid_val, "title": title_val, "folder": folder_val, "url": url_val})
     return videos
 
+
+def _split_csv_row(line):
+    result = []
+    current = []
+    in_quotes = False
+    for ch in line:
+        if ch == '"':
+            in_quotes = not in_quotes
+            current.append(ch)
+        elif ch == ',' and not in_quotes:
+            result.append(''.join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+    result.append(''.join(current).strip())
+    return result
 
 # ── Phase 2: 工具函数 ─────────────────────────────────────
 
@@ -362,20 +581,25 @@ def load_checkpoint(output_dir=None):
         return {}
 
 
-def update_checkpoint(bvid, status, task_id, output_dir=None):
-    if output_dir is None:
-        output_dir = OUTPUT_DIR
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / _CHECKPOINT_FILE
-
-    records = load_checkpoint(output_dir)
+def update_checkpoint(bvid, status, task_id, output_dir=None, folder="", title="", transcript_source=""):
+    actual_output_dir = str(output_dir) if output_dir else str(OUTPUT_DIR)
+    records = load_checkpoint()
     records[bvid] = {
         "task_id": task_id,
         "status": status,
         "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "folder": folder,
+        "title": title,
+        "output_dir": actual_output_dir,
+        "transcript_source": transcript_source,
     }
+    _save_checkpoint_file(records)
 
+
+def _save_checkpoint_file(records):
+    checkpoint_dir = Path(OUTPUT_DIR)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    path = checkpoint_dir / _CHECKPOINT_FILE
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(str(tmp), str(path))
@@ -387,6 +611,133 @@ for _bvid, _rec in _checkpoint_data.items():
     if _rec.get("status") == "SUCCESS":
         _processed_bvids.add(_bvid)
 app.logger.info("从 checkpoint 加载了 %d 个已处理视频", len(_processed_bvids))
+
+
+@app.route("/api/copy-files", methods=["POST"])
+def copy_files():
+    import shutil
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "无效的请求数据"}), 400
+    dest_dir = data.get("dest_dir", "")
+    file_type = data.get("file_type", "md")
+    if not dest_dir:
+        return jsonify({"error": "未指定目标目录"}), 400
+    dest = Path(dest_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+    records = load_checkpoint()
+    copied = 0
+    errors = []
+    for bvid, rec in records.items():
+        if rec.get("status") != "SUCCESS":
+            continue
+        rec_output_dir = Path(rec.get("output_dir", str(OUTPUT_DIR)))
+        safe_folder = sanitize_filename(rec.get("folder", "未分类"), max_len=60)
+        safe_title = sanitize_filename(rec.get("title", ""), max_len=80)
+        dir_name = f"{bvid} - {safe_title}"
+        src_dir = rec_output_dir / safe_folder / dir_name
+        if not src_dir.exists() and rec_output_dir.exists():
+            found = None
+            for d in rec_output_dir.rglob(bvid + "*"):
+                if d.is_dir():
+                    found = d
+                    break
+            src_dir = found if found else src_dir
+        if not src_dir.exists():
+            continue
+        for f in src_dir.iterdir():
+            if not f.is_file() or f.name.startswith("_"):
+                continue
+            match = False
+            if file_type == "md" and f.name == "笔记.md":
+                match = True
+            elif file_type == "txt" and f.name == "原文.txt":
+                match = True
+            elif file_type == "json" and f.name == "完整.json":
+                match = True
+            elif file_type == "mindmap" and f.name == "思维导图.md":
+                match = True
+            if match:
+                try:
+                    new_name = f"{dir_name} - {f.name}"
+                    shutil.copy2(str(f), str(dest / new_name))
+                    copied += 1
+                except Exception as e:
+                    errors.append(f"{f.name}: {e}")
+    return jsonify({"copied": copied, "errors": errors})
+
+
+@app.route("/api/bilinotes-sync")
+def bilinotes_sync():
+    existing_ids = set(request.args.get("existing_ids", "").split(",")) if request.args.get("existing_ids") else set()
+    records = load_checkpoint()
+    tasks = []
+    for bvid, rec in records.items():
+        if rec.get("status") != "SUCCESS":
+            continue
+        task_id = rec.get("task_id", "")
+        if task_id in existing_ids:
+            continue
+        try:
+            resp = requests.get(
+                f"{BILINOTE_BASE_URL}/api/task_status/{task_id}", timeout=5
+            )
+            body = resp.json()
+            if body.get("code") != 0:
+                continue
+            inner = body.get("data", {})
+            result = inner.get("result") or {}
+        except Exception:
+            result = {}
+
+        audio_meta = result.get("audio_meta") or {}
+        raw_info = audio_meta.get("raw_info") or {}
+        if not isinstance(raw_info, dict):
+            raw_info = {}
+        title = rec.get("title", "") or raw_info.get("title", "") or raw_info.get("fulltitle", "")
+        transcript = result.get("transcript") or {}
+        if isinstance(transcript, dict):
+            segments = transcript.get("segments", [])
+            if not isinstance(segments, list):
+                segments = []
+            transcript_data = {
+                "full_text": transcript.get("full_text", ""),
+                "language": transcript.get("language", ""),
+                "raw": None,
+                "segments": segments,
+            }
+        else:
+            transcript_data = {
+                "full_text": "", "language": "", "raw": None, "segments": []
+            }
+
+        task = {
+            "formData": {
+                "video_url": f"https://www.bilibili.com/video/{bvid}/",
+                "platform": "bilibili",
+                "model_name": "",
+                "provider_id": "",
+                "quality": "medium",
+                "style": "detailed",
+            },
+            "id": task_id,
+            "status": "SUCCESS",
+            "markdown": result.get("markdown", ""),
+            "platform": "bilibili",
+            "transcript": transcript_data,
+            "createdAt": rec.get("time", ""),
+            "audioMeta": {
+                "cover_url": audio_meta.get("cover_url", "") or raw_info.get("thumbnail", ""),
+                "duration": audio_meta.get("duration", 0) or raw_info.get("duration", 0),
+                "file_path": audio_meta.get("file_path", ""),
+                "platform": audio_meta.get("platform", "bilibili"),
+                "raw_info": None,
+                "title": title,
+                "video_id": audio_meta.get("video_id", bvid),
+            },
+        }
+        tasks.append(task)
+    return jsonify({"tasks": tasks, "count": len(tasks)})
 
 
 # ── 启动入口 ──────────────────────────────────────────────

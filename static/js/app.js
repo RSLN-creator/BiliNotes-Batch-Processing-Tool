@@ -1,9 +1,7 @@
 /* ── BiliNote Batch Tool ──────────────────────────────── */
-/* D-03: 事件驱动 + DOM 操作，原生 JS 无框架 */
 
 var $ = function (id) { return document.getElementById(id); };
 
-/* ── 状态 ──────────────────────────────────────────────── */
 var state = {
     videos: [],
     selectedFile: null,
@@ -12,90 +10,240 @@ var state = {
     running: false,
     stopRequested: false,
     processedBvids: new Set(),
+    processedRecords: {},
     currentIndex: 0,
     stats: { total: 0, success: 0, failed: 0, skipped: 0 },
     outputDir: "./output",
     searchQuery: "",
     statusFilter: "all",
+    viewMode: "table",
+    bilinoteUrl: "http://localhost:3015",
+    transcriberConfig: null,
+    transcriberModels: null,
+    currentModelName: "",
 };
 
-/* ── DOM 引用 ──────────────────────────────────────────── */
 var fileInput, selectFileBtn, fileName;
-var providerSelect, modelSelect, styleSelect, promptInput;
-var optScreenshot, optLink, optVideoUnderstanding;
+var providerSelect, modelSelect, styleSelect, promptInput, qualitySelect;
+var transcriberSelect, whisperModelSelect;
+var fmtToc, fmtSummary, fmtScreenshot, fmtLink;
+var optVideoUnderstanding, videoInterval, gridRows, gridCols;
 var saveMd, saveTxt, saveJson, saveMindmap;
 var videoList, videoCount, videoToolbar;
 var banner;
-var startBtn, stopBtn, bilinoteLinkBtn, progressBar, progressSection, logArea;
+var startBtn, startSelectedBtn, stopBtn, bilinoteLinkBtn, progressBar, progressSection, logArea;
 var totalSpan, successSpan, failedSpan, skippedSpan, currentSpan;
 var outputDirInput, pickDirBtn;
-var selectAllCb, searchInput, statusFilterEl, selectedCountEl;
+var selectAllCb, searchInput, selectedCountEl, selectedCountBtn;
+var viewTableBtn, viewCardBtn;
+var themeToggle, screenshotHint, vuHint, screenshotLabel, vuLabel;
 
-/* ── 初始化 ────────────────────────────────────────────── */
 document.addEventListener("DOMContentLoaded", function () {
-    fileInput = $("file-input");
-    selectFileBtn = $("select-file-btn");
-    fileName = $("file-name");
-    providerSelect = $("provider-select");
-    modelSelect = $("model-select");
-    styleSelect = $("style-select");
-    promptInput = $("prompt-input");
-    optScreenshot = $("opt-screenshot");
-    optLink = $("opt-link");
+    fileInput = $("file-input"); selectFileBtn = $("select-file-btn"); fileName = $("file-name");
+    providerSelect = $("provider-select"); modelSelect = $("model-select");
+    styleSelect = $("style-select"); promptInput = $("prompt-input"); qualitySelect = $("quality-select");
+    transcriberSelect = $("transcriber-select"); whisperModelSelect = $("whisper-model-select");
+    fmtToc = $("fmt-toc"); fmtSummary = $("fmt-summary"); fmtScreenshot = $("fmt-screenshot"); fmtLink = $("fmt-link");
     optVideoUnderstanding = $("opt-video-understanding");
-    saveMd = $("save-md");
-    saveTxt = $("save-txt");
-    saveJson = $("save-json");
-    saveMindmap = $("save-mindmap");
-    videoList = $("video-list");
-    videoCount = $("video-count");
-    videoToolbar = $("video-toolbar");
+    videoInterval = $("video-interval"); gridRows = $("grid-rows"); gridCols = $("grid-cols");
+    saveMd = $("save-md"); saveTxt = $("save-txt"); saveJson = $("save-json"); saveMindmap = $("save-mindmap");
+    videoList = $("video-list"); videoCount = $("video-count"); videoToolbar = $("video-toolbar");
     banner = $("banner");
-    startBtn = $("start-btn");
-    stopBtn = $("stop-btn");
-    bilinoteLinkBtn = $("bilinote-link-btn");
-    progressBar = $("progress-bar");
-    progressSection = $("progress-section");
-    logArea = $("log-area");
-    totalSpan = $("stat-total");
-    successSpan = $("stat-success");
-    failedSpan = $("stat-failed");
-    skippedSpan = $("stat-skipped");
-    currentSpan = $("stat-current");
-    outputDirInput = $("output-dir");
-    pickDirBtn = $("pick-dir-btn");
-    selectAllCb = $("select-all");
-    searchInput = $("search-input");
-    statusFilterEl = $("status-filter");
-    selectedCountEl = $("selected-count");
+    startBtn = $("start-btn"); startSelectedBtn = $("start-selected-btn"); stopBtn = $("stop-btn");
+    bilinoteLinkBtn = $("bilinote-link-btn"); progressBar = $("progress-bar");
+    progressSection = $("progress-section"); logArea = $("log-area");
+    totalSpan = $("stat-total"); successSpan = $("stat-success"); failedSpan = $("stat-failed");
+    skippedSpan = $("stat-skipped"); currentSpan = $("stat-current");
+    outputDirInput = $("output-dir"); pickDirBtn = $("pick-dir-btn");
+    selectAllCb = $("select-all"); searchInput = $("search-input");
+    selectedCountEl = $("selected-count"); selectedCountBtn = $("selected-count-btn");
+    viewTableBtn = $("view-table"); viewCardBtn = $("view-card");
+    themeToggle = $("theme-toggle");
+    screenshotHint = $("screenshot-hint"); vuHint = $("vu-hint");
+    screenshotLabel = $("screenshot-label"); vuLabel = $("vu-label");
 
     selectFileBtn.addEventListener("click", function () { fileInput.click(); });
     fileInput.addEventListener("change", onFileSelected);
-    providerSelect.addEventListener("change", onProviderChanged);
-    startBtn.addEventListener("click", startBatch);
+    providerSelect.addEventListener("change", function () { onProviderChanged(); saveConfig(); });
+    modelSelect.addEventListener("change", function () { onModelChanged(); saveConfig(); });
+    transcriberSelect.addEventListener("change", function () { onTranscriberChanged(); saveConfig(); });
+    styleSelect.addEventListener("change", saveConfig);
+    qualitySelect.addEventListener("change", saveConfig);
+    promptInput.addEventListener("input", saveConfig);
+    outputDirInput.addEventListener("change", saveConfig);
+    fmtToc.addEventListener("change", saveConfig);
+    fmtSummary.addEventListener("change", saveConfig);
+    fmtScreenshot.addEventListener("change", saveConfig);
+    fmtLink.addEventListener("change", saveConfig);
+    saveMd.addEventListener("change", saveConfig);
+    saveTxt.addEventListener("change", saveConfig);
+    saveJson.addEventListener("change", saveConfig);
+    saveMindmap.addEventListener("change", saveConfig);
+    optVideoUnderstanding.addEventListener("change", saveConfig);
+    videoInterval.addEventListener("input", saveConfig);
+    gridRows.addEventListener("input", saveConfig);
+    gridCols.addEventListener("input", saveConfig);
+    $("export-dir").addEventListener("change", saveConfig);
+    startBtn.addEventListener("click", function () { startBatch(false); });
+    startSelectedBtn.addEventListener("click", function () { startBatch(true); });
     stopBtn.addEventListener("click", stopBatch);
     pickDirBtn.addEventListener("click", pickOutputDir);
-    bilinoteLinkBtn.addEventListener("click", function () { window.open("http://localhost:3015", "_blank"); });
+    bilinoteLinkBtn.addEventListener("click", function () { window.open(state.bilinoteUrl, "_blank"); });
+    $("pick-export-dir-btn").addEventListener("click", pickExportDir);
+    $("copy-md-btn").addEventListener("click", function () { copyFiles("md"); });
+    $("copy-txt-btn").addEventListener("click", function () { copyFiles("txt"); });
+    $("copy-json-btn").addEventListener("click", function () { copyFiles("json"); });
+    $("copy-mindmap-btn").addEventListener("click", function () { copyFiles("mindmap"); });
+    $("sync-bilinotes-btn").addEventListener("click", syncToBilinotesDB);
+    $("sync-modal-close").addEventListener("click", closeSyncModal);
+    $("sync-copy-btn").addEventListener("click", copySyncScript);
+    $("sync-modal").querySelector(".modal-overlay").addEventListener("click", closeSyncModal);
     selectAllCb.addEventListener("change", onSelectAll);
     searchInput.addEventListener("input", onSearchFilter);
-    statusFilterEl.addEventListener("change", onSearchFilter);
+    viewTableBtn.addEventListener("click", function () { switchView("table"); });
+    viewCardBtn.addEventListener("click", function () { switchView("card"); });
+    themeToggle.addEventListener("click", toggleTheme);
+
+    document.querySelectorAll(".filter-chip").forEach(function (chip) {
+        chip.addEventListener("click", function () {
+            document.querySelectorAll(".filter-chip").forEach(function (c) { c.classList.remove("active"); });
+            chip.classList.add("active");
+            state.statusFilter = chip.getAttribute("data-filter");
+            selectAllCb.checked = false;
+            renderVideoList();
+        });
+    });
+
+    window.addEventListener("message", onBilinoteMessage);
+
+    initTheme();
+    restoreConfig();
+    loadTranscriberConfig();
+    loadProviders();
+    checkModelCapabilities();
 });
 
-/* ── 输出目录选择 ──────────────────────────────────────── */
+function onBilinoteMessage(event) {
+    if (event.origin !== state.bilinoteUrl) return;
+    if (event.data && event.data.type === "BILINOTE_READY") {
+        var pendingTaskId = sessionStorage.getItem("bilinote_pending_task");
+        if (pendingTaskId) {
+            sessionStorage.removeItem("bilinote_pending_task");
+            event.source.postMessage({ type: "SELECT_TASK", taskId: pendingTaskId }, state.bilinoteUrl);
+        }
+    }
+}
+
+function openBilinoteTask(taskId) {
+    var w = window.open(state.bilinoteUrl, "bilinote_window");
+    sessionStorage.setItem("bilinote_pending_task", taskId);
+    setTimeout(function () {
+        try {
+            w.postMessage({ type: "SELECT_TASK", taskId: taskId }, state.bilinoteUrl);
+        } catch (e) {}
+    }, 2000);
+}
+
+function initTheme() {
+    var saved = localStorage.getItem("bilinote-batch-theme") || "dark";
+    document.documentElement.setAttribute("data-theme", saved);
+    themeToggle.textContent = saved === "dark" ? "☀️" : "🌙";
+}
+
+function toggleTheme() {
+    var current = document.documentElement.getAttribute("data-theme");
+    var next = current === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    localStorage.setItem("bilinote-batch-theme", next);
+    themeToggle.textContent = next === "dark" ? "☀️" : "🌙";
+}
+
+function saveConfig() {
+    var cfg = {
+        provider_id: providerSelect.value,
+        model_name: modelSelect.value,
+        style: styleSelect.value,
+        quality: qualitySelect.value,
+        transcriber_type: transcriberSelect.value,
+        whisper_model_size: whisperModelSelect.value,
+        extras: promptInput.value,
+        output_dir: outputDirInput.value,
+        fmt_toc: fmtToc.checked,
+        fmt_summary: fmtSummary.checked,
+        fmt_screenshot: fmtScreenshot.checked,
+        fmt_link: fmtLink.checked,
+        save_md: saveMd.checked,
+        save_txt: saveTxt.checked,
+        save_json: saveJson.checked,
+        save_mindmap: saveMindmap.checked,
+        video_understanding: optVideoUnderstanding.checked,
+        video_interval: videoInterval.value,
+        grid_rows: gridRows.value,
+        grid_cols: gridCols.value,
+        export_dir: $("export-dir").value,
+    };
+    localStorage.setItem("bilinote-batch-config", JSON.stringify(cfg));
+}
+
+function restoreConfig() {
+    try {
+        var raw = localStorage.getItem("bilinote-batch-config");
+        if (!raw) return;
+        var cfg = JSON.parse(raw);
+        if (cfg.output_dir) outputDirInput.value = cfg.output_dir;
+        if (cfg.export_dir) $("export-dir").value = cfg.export_dir;
+        if (cfg.style) styleSelect.value = cfg.style;
+        if (cfg.quality) qualitySelect.value = cfg.quality;
+        if (cfg.extras) promptInput.value = cfg.extras;
+        if (cfg.transcriber_type) transcriberSelect.value = cfg.transcriber_type;
+        if (cfg.whisper_model_size) whisperModelSelect.value = cfg.whisper_model_size;
+        if (cfg.fmt_toc) fmtToc.checked = true;
+        if (cfg.fmt_summary) fmtSummary.checked = true;
+        if (cfg.fmt_screenshot) fmtScreenshot.checked = true;
+        if (cfg.fmt_link) fmtLink.checked = true;
+        if (cfg.save_md !== undefined) saveMd.checked = cfg.save_md;
+        if (cfg.save_txt !== undefined) saveTxt.checked = cfg.save_txt;
+        if (cfg.save_json !== undefined) saveJson.checked = cfg.save_json;
+        if (cfg.save_mindmap !== undefined) saveMindmap.checked = cfg.save_mindmap;
+        if (cfg.video_understanding) optVideoUnderstanding.checked = true;
+        if (cfg.video_interval) videoInterval.value = cfg.video_interval;
+        if (cfg.grid_rows) gridRows.value = cfg.grid_rows;
+        if (cfg.grid_cols) gridCols.value = cfg.grid_cols;
+        if (cfg.provider_id) {
+            providerSelect.value = cfg.provider_id;
+            loadProviders().then(function () {
+                providerSelect.value = cfg.provider_id;
+                if (cfg.provider_id && cfg.model_name) {
+                    loadModels(cfg.provider_id).then(function () {
+                        modelSelect.value = cfg.model_name;
+                        state.currentModelName = cfg.model_name;
+                        checkModelCapabilities();
+                    });
+                }
+            });
+        }
+    } catch (e) {}
+}
+
+function switchView(mode) {
+    state.viewMode = mode;
+    viewTableBtn.classList.toggle("active", mode === "table");
+    viewCardBtn.classList.toggle("active", mode === "card");
+    renderVideoList();
+}
+
 async function pickOutputDir() {
     try {
         var handle = await window.showDirectoryPicker();
         outputDirInput.value = handle.name;
     } catch (e) {
         try {
-            var res = await fetch("/api/pick-directory");
-            var data = await res.json();
+            var res = await fetch("/api/pick-directory"); var data = await res.json();
             if (data.path) outputDirInput.value = data.path;
         } catch (e2) {}
     }
 }
 
-/* ── 文件选择 ──────────────────────────────────────────── */
 async function onFileSelected(event) {
     var file = event.target.files[0];
     if (!file) return;
@@ -106,27 +254,147 @@ async function onFileSelected(event) {
 
 async function loadFile(file) {
     try {
-        var text = await file.text();
         var fileType = file.name.toLowerCase().endsWith(".csv") ? "csv" : "json";
-
-        var res = await fetch("/api/parse-file", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content: text, filename: file.name, fileType: fileType }),
-        });
-        var data = await res.json();
-        if (!res.ok) { showBanner("文件解析失败：" + (data.error || "未知错误"), "error"); return; }
-
-        state.videos = data.videos;
+        var videos;
+        if (fileType === "csv") {
+            var formData = new FormData();
+            formData.append("file", file);
+            var res = await fetch("/api/parse-file", { method: "POST", body: formData });
+            var data = await res.json();
+            if (!res.ok || !data.videos || data.videos.length === 0) {
+                showBanner(data.error || "CSV 解析失败", "error"); return;
+            }
+            videos = data.videos;
+        } else {
+            var text = await file.text();
+            videos = parseJsonFrontend(text);
+        }
+        if (!videos || videos.length === 0) {
+            showBanner("文件中未找到有效视频数据", "error"); return;
+        }
+        state.videos = videos;
         state.searchQuery = ""; state.statusFilter = "all";
-        searchInput.value = ""; statusFilterEl.value = "all"; selectAllCb.checked = false;
+        searchInput.value = ""; selectAllCb.checked = false;
+        document.querySelectorAll(".filter-chip").forEach(function (c) { c.classList.remove("active"); });
+        document.querySelector('.filter-chip[data-filter="all"]').classList.add("active");
         await loadCheckpoint();
         renderVideoList();
         hideBanner();
-        if (!providerSelect.value || providerSelect.value === "") await loadProviders();
-    } catch (err) { showBanner("文件读取失败：" + err.message, "error"); }
+    } catch (err) { showBanner("文件解析失败：" + err.message, "error"); }
 }
 
-/* ── BiliNote 供应商/模型 ──────────────────────────────── */
+function cleanFolderName(name) {
+    if (name && name[0] >= "0" && name[0] <= "9") {
+        var idx = name.indexOf("-");
+        return idx >= 0 ? name.substring(idx + 1) : name;
+    }
+    return name;
+}
+
+function parseJsonFrontend(text) {
+    var data = JSON.parse(text);
+    var folderMap = {};
+    var folders = data.folders || [];
+    for (var i = 0; i < folders.length; i++) {
+        var f = folders[i];
+        var name = cleanFolderName(f.name || "");
+        folderMap[f.id] = name || "默认";
+    }
+    var videos = [];
+    var items = data.videos || [];
+    for (var j = 0; j < items.length; j++) {
+        var v = items[j];
+        var bvid = (v.bvid || "").trim();
+        if (!bvid) continue;
+        var fid = v.folderId || v.folder_id || 1;
+        videos.push({
+            bvid: bvid,
+            title: (v.title || "").trim(),
+            url: v.bvidUrl || ("https://www.bilibili.com/video/" + bvid + "/"),
+            folder: folderMap[fid] || "默认",
+        });
+    }
+    return videos;
+}
+
+function parseCsvFrontend(text) {
+    var lines = text.split(/\r?\n/);
+    if (lines.length < 2) return [];
+    var headers = lines[0].split(",").map(function (h) { return h.trim().replace(/^"|"$/g, ""); });
+    var colBvid = -1, colTitle = -1, colFolder = -1, colUrl = -1;
+    var bvidAliases = ["bvid", "bvid", "BV号", "BV", "avid", "aid"];
+    var titleAliases = ["title", "标题", "视频标题", "name"];
+    var folderAliases = ["folder", "folders", "收藏夹", "folder_title", "folder_name"];
+    var urlAliases = ["url", "链接", "video_url", "page_url", "bvidUrl"];
+    for (var i = 0; i < headers.length; i++) {
+        var h = headers[i];
+        if (colBvid < 0 && bvidAliases.indexOf(h) >= 0) colBvid = i;
+        if (colTitle < 0 && titleAliases.indexOf(h) >= 0) colTitle = i;
+        if (colFolder < 0 && folderAliases.indexOf(h) >= 0) colFolder = i;
+        if (colUrl < 0 && urlAliases.indexOf(h) >= 0) colUrl = i;
+    }
+    if (colBvid < 0) throw new Error("CSV 中未找到 BV 号列");
+    var videos = [];
+    for (var k = 1; k < lines.length; k++) {
+        var line = lines[k].trim();
+        if (!line) continue;
+        var cols = line.split(",").map(function (c) { return c.trim().replace(/^"|"$/g, ""); });
+        var bvid = (cols[colBvid] || "").trim();
+        if (!bvid) continue;
+        var folder = colFolder >= 0 ? cleanFolderName((cols[colFolder] || "").trim()) : "";
+        videos.push({
+            bvid: bvid,
+            title: colTitle >= 0 ? (cols[colTitle] || "").trim() : "",
+            url: colUrl >= 0 ? (cols[colUrl] || "").trim() : ("https://www.bilibili.com/video/" + bvid + "/"),
+            folder: folder || "未分类",
+        });
+    }
+    return videos;
+}
+
+async function loadTranscriberConfig() {
+    try {
+        var res = await fetch("/api/transcriber-config"); var data = await res.json();
+        if (!data.connected) return;
+        state.transcriberConfig = data.data;
+        var types = data.data.available_types || [];
+        transcriberSelect.innerHTML = types.map(function (t) {
+            return '<option value="' + t.value + '">' + escapeHtml(t.label) + "</option>";
+        }).join("");
+        if (data.data.transcriber_type) transcriberSelect.value = data.data.transcriber_type;
+        await loadTranscriberModels();
+    } catch (err) {}
+}
+
+async function loadTranscriberModels() {
+    try {
+        var res = await fetch("/api/transcriber-models-status"); var data = await res.json();
+        if (!data.connected) return;
+        state.transcriberModels = data.data;
+        var models = data.data.whisper || [];
+        whisperModelSelect.innerHTML = models.map(function (m) {
+            var suffix = m.downloaded ? " ✓" : " (未下载)";
+            var disabled = m.downloaded ? "" : " disabled";
+            return '<option value="' + m.model_size + '"' + disabled + '>' + m.model_size + suffix + "</option>";
+        }).join("");
+        if (state.transcriberConfig && state.transcriberConfig.whisper_model_size) {
+            whisperModelSelect.value = state.transcriberConfig.whisper_model_size;
+        }
+    } catch (err) {}
+}
+
+function onTranscriberChanged() {
+    var val = transcriberSelect.value;
+    var isLocal = val === "fast-whisper" || val === "mlx-whisper";
+    var isOnline = val === "bijian" || val === "kuaishou" || val === "groq";
+    whisperModelSelect.disabled = !isLocal;
+    if (!isLocal) {
+        whisperModelSelect.innerHTML = '<option value="">在线引擎无需选择</option>';
+    } else {
+        loadTranscriberModels();
+    }
+}
+
 async function onProviderChanged() {
     var pid = providerSelect.value;
     if (!pid) { modelSelect.disabled = true; modelSelect.innerHTML = '<option value="">-- 请先选择供应商 --</option>'; return; }
@@ -148,20 +416,75 @@ async function loadProviders() {
 async function loadModels(providerId) {
     try {
         var res = await fetch("/api/providers/" + providerId + "/models"); var data = await res.json();
-        if (!data.connected) { showBanner("无法连接 BiliNote", "warning"); modelSelect.disabled = true; modelSelect.innerHTML = '<option value="">-- 无法获取 --</option>'; return; }
+        if (!data.connected) { modelSelect.disabled = true; modelSelect.innerHTML = '<option value="">-- 无法获取 --</option>'; return; }
         var models = data.models || [];
-        if (models.length === 0) { showBanner("该供应商下无可用模型", "warning"); modelSelect.disabled = true; modelSelect.innerHTML = '<option value="">暂无模型</option>'; return; }
+        if (models.length === 0) { modelSelect.disabled = true; modelSelect.innerHTML = '<option value="">暂无模型</option>'; return; }
         hideBanner(); state.models = models; modelSelect.disabled = false;
         modelSelect.innerHTML = '<option value="">-- 选择模型 --</option>' + models.map(function (m) { return '<option value="' + m.model_name + '">' + escapeHtml(m.model_name) + "</option>"; }).join("");
-    } catch (err) { showBanner("无法连接 BiliNote：" + err.message, "warning"); modelSelect.disabled = true; modelSelect.innerHTML = '<option value="">-- 无法获取 --</option>'; }
+    } catch (err) { modelSelect.disabled = true; modelSelect.innerHTML = '<option value="">-- 无法获取 --</option>'; }
 }
 
-/* ── 搜索/筛选 ─────────────────────────────────────────── */
+function onModelChanged() {
+    state.currentModelName = modelSelect.value;
+    checkModelCapabilities();
+}
+
+function checkModelCapabilities() {
+    var name = (state.currentModelName || "").toLowerCase();
+    if (!name) {
+        fmtScreenshot.disabled = false;
+        optVideoUnderstanding.disabled = false;
+        screenshotHint.textContent = "(选择模型后自动判断)";
+        vuHint.textContent = "(选择模型后自动判断)";
+        screenshotLabel.classList.remove("disabled-hint");
+        vuLabel.classList.remove("disabled-hint");
+        return;
+    }
+    var isVision = name.indexOf("vision") !== -1 || name.indexOf("4o") !== -1 ||
+        name.indexOf("gpt-4") !== -1 || name.indexOf("claude-3") !== -1 ||
+        name.indexOf("gemini") !== -1 || name.indexOf("qwen-vl") !== -1 ||
+        name.indexOf("glm-4v") !== -1;
+
+    if (isVision) {
+        fmtScreenshot.disabled = false;
+        optVideoUnderstanding.disabled = false;
+        screenshotHint.textContent = "";
+        vuHint.textContent = "";
+        screenshotLabel.classList.remove("disabled-hint");
+        vuLabel.classList.remove("disabled-hint");
+    } else {
+        fmtScreenshot.checked = false;
+        fmtScreenshot.disabled = true;
+        optVideoUnderstanding.checked = false;
+        optVideoUnderstanding.disabled = true;
+        screenshotHint.textContent = "(需多模态模型)";
+        vuHint.textContent = "(需多模态模型)";
+        screenshotLabel.classList.add("disabled-hint");
+        vuLabel.classList.add("disabled-hint");
+    }
+}
+
+function getVideoStatus(bvid) {
+    var rec = state.processedRecords[bvid];
+    if (!rec) return "pending";
+    if (rec.status === "SUCCESS") return "done";
+    if (rec.status === "FAILED") return "failed";
+    return "pending";
+}
+
+function isAiSubtitle(bvid) {
+    var rec = state.processedRecords[bvid];
+    return rec && rec.transcript_source === "ai_subtitle";
+}
+
 function getFilteredVideos() {
     var q = state.searchQuery.toLowerCase(), filter = state.statusFilter;
     return state.videos.filter(function (v) {
-        if (filter === "pending" && state.processedBvids.has(v.bvid)) return false;
-        if (filter === "done" && !state.processedBvids.has(v.bvid)) return false;
+        var st = getVideoStatus(v.bvid);
+        if (filter === "pending" && st !== "pending") return false;
+        if (filter === "done" && st !== "done") return false;
+        if (filter === "failed" && st !== "failed") return false;
+        if (filter === "ai_subtitle" && !isAiSubtitle(v.bvid)) return false;
         if (q) return (v.bvid || "").toLowerCase().indexOf(q) !== -1 || (v.title || "").toLowerCase().indexOf(q) !== -1;
         return true;
     });
@@ -176,6 +499,8 @@ function getSelectedBvids() {
 function updateSelectedCount() {
     var sel = getSelectedBvids().length, total = state.videos.length;
     selectedCountEl.textContent = sel > 0 ? "已选 " + sel + "/" + total : "";
+    selectedCountBtn.textContent = sel;
+    startSelectedBtn.disabled = sel === 0;
 }
 
 function onSelectAll() {
@@ -183,15 +508,14 @@ function onSelectAll() {
     updateSelectedCount();
 }
 
-function onSearchFilter() { state.searchQuery = searchInput.value; state.statusFilter = statusFilterEl.value; selectAllCb.checked = false; renderVideoList(); }
+function onSearchFilter() { state.searchQuery = searchInput.value; selectAllCb.checked = false; renderVideoList(); }
 
-/* ── 视频列表渲染 ──────────────────────────────────────── */
 function renderVideoList() {
     var filtered = getFilteredVideos();
 
     if (!state.videos || state.videos.length === 0) {
         videoToolbar.style.display = "none";
-        videoList.innerHTML = '<div class="empty-state"><p class="empty-title">欢迎使用 BiliNote 批量收藏转写</p><ol class="empty-guide"><li>从 <strong>Bilishelf</strong> 浏览器插件导出收藏文件（JSON 或 CSV）</li><li>点击上方 <strong>"选择收藏文件"</strong> 加载数据</li><li>选择 <strong>供应商</strong> 和 <strong>模型</strong></li><li>点击 <strong>"开始批量处理"</strong> 一键生成笔记</li></ol></div>';
+        videoList.innerHTML = '<div class="empty-state"><p class="empty-title">欢迎使用 BiliNote 批量收藏转写</p><ol class="empty-guide"><li>从 <strong>Bilishelf</strong> 浏览器插件导出收藏文件（JSON 或 CSV）</li><li>点击上方 <strong>"选择收藏文件"</strong> 加载数据</li><li>选择 <strong>供应商</strong>、<strong>模型</strong> 和 <strong>转写配置</strong></li><li>点击 <strong>"处理全部待处理"</strong> 或选中视频后 <strong>"处理选中"</strong></li></ol></div>';
         videoCount.textContent = "共 0 个视频";
         return;
     }
@@ -205,6 +529,24 @@ function renderVideoList() {
         return;
     }
 
+    if (state.viewMode === "card") {
+        renderCardView(filtered);
+    } else {
+        renderTableView(filtered);
+    }
+
+    selectAllCb.checked = false; updateSelectedCount();
+
+    var doneCount = 0, failedCount = 0;
+    state.videos.forEach(function (v) {
+        var st = getVideoStatus(v.bvid);
+        if (st === "done") doneCount++;
+        if (st === "failed") failedCount++;
+    });
+    videoCount.textContent = "共 " + state.videos.length + " 个（✓ " + doneCount + " / ✗ " + failedCount + " / 待 " + (state.videos.length - doneCount - failedCount) + "）";
+}
+
+function renderTableView(filtered) {
     var groups = {};
     for (var i = 0; i < filtered.length; i++) {
         var v = filtered[i], folder = v.folder || "未分类";
@@ -218,50 +560,214 @@ function renderVideoList() {
         html += '<div class="folder-group"><h3 class="folder-title">' + escapeHtml(folder) + " (" + items.length + ")</h3>";
         html += '<table class="video-table"><thead><tr>';
         html += '<th class="cb-col"><input type="checkbox" class="folder-cb"></th>';
-        html += '<th class="bv-col">BV号</th><th>标题</th><th class="status-col">状态</th>';
+        html += '<th class="bv-col">BV号</th><th>标题</th><th class="status-col">状态</th><th class="action-col">操作</th>';
         html += "</tr></thead><tbody>";
         for (var vi = 0; vi < items.length; vi++) {
-            var v = items[vi], isDone = state.processedBvids.has(v.bvid);
-            html += "<tr>";
+            var v = items[vi], st = getVideoStatus(v.bvid);
+            html += "<tr class='row-" + st + "'>";
             html += '<td class="cb-col"><input type="checkbox" class="video-cb" value="' + v.bvid + '"></td>';
             html += '<td class="bvid">' + escapeHtml(v.bvid) + "</td>";
             html += '<td><a href="' + v.url + '" target="_blank" rel="noopener" class="video-link" title="在 B 站打开">' + escapeHtml(v.title) + "</a></td>";
-            html += '<td><span class="status-badge ' + (isDone ? "status-success" : "status-pending") + '">' + (isDone ? "已处理" : "待处理") + "</span></td>";
+            html += '<td><span class="status-badge status-' + st + '">' + statusLabel(st) + "</span>" + (isAiSubtitle(v.bvid) ? ' <span class="ai-badge">⚠️ AI匹配</span>' : "") + "</td>";
+            html += '<td class="action-col">' + renderActionButtons(v, st) + "</td>";
             html += "</tr>";
         }
         html += "</tbody></table></div>";
     }
     videoList.innerHTML = html;
-    selectAllCb.checked = false; updateSelectedCount();
+    bindTableEvents();
+}
 
+function renderCardView(filtered) {
+    var html = '<div class="card-grid">';
+    for (var i = 0; i < filtered.length; i++) {
+        var v = filtered[i], st = getVideoStatus(v.bvid);
+        html += '<div class="video-card status-card-' + st + '">';
+        html += '<div class="card-header">';
+        html += '<input type="checkbox" class="video-cb" value="' + v.bvid + '">';
+        html += '<span class="status-badge status-' + st + '">' + statusLabel(st) + "</span>" + (isAiSubtitle(v.bvid) ? ' <span class="ai-badge">⚠️ AI匹配</span>' : "");
+        html += "</div>";
+        html += '<a href="' + v.url + '" target="_blank" rel="noopener" class="card-title video-link" title="在 B 站打开">' + escapeHtml(v.title) + "</a>";
+        html += '<div class="card-meta">';
+        html += '<span class="bvid">' + escapeHtml(v.bvid) + "</span>";
+        html += '<span class="card-folder">' + escapeHtml(v.folder || "未分类") + "</span>";
+        html += "</div>";
+        html += '<div class="card-actions">' + renderActionButtons(v, st) + "</div>";
+        html += "</div>";
+    }
+    html += "</div>";
+    videoList.innerHTML = html;
+    bindCardEvents();
+}
+
+function statusLabel(st) {
+    if (st === "done") return "✓ 已处理";
+    if (st === "failed") return "✗ 失败";
+    return "待处理";
+}
+
+function renderActionButtons(v, st) {
+    var html = "";
+    if (st === "done") {
+        html += '<button class="btn btn-xs btn-open-file" data-bvid="' + v.bvid + '" title="打开本地笔记文件">📂 打开文件</button>';
+        html += '<button class="btn btn-xs btn-bilinote" data-bvid="' + v.bvid + '" data-task="' + (state.processedRecords[v.bvid] ? state.processedRecords[v.bvid].task_id : "") + '" title="在 BiliNote 中查看笔记">🔗 BiliNote</button>';
+        html += '<button class="btn btn-xs btn-reprocess" data-bvid="' + v.bvid + '" title="重新处理">🔄</button>';
+        if (isAiSubtitle(v.bvid)) {
+            html += '<button class="btn btn-xs btn-force-retranscribe" data-bvid="' + v.bvid + '" title="原视频无字幕，BiliNotes用了AI匹配字幕。点击删除缓存，强制用本地模型重新转写">🔧 强制重转</button>';
+        }
+    } else if (st === "failed") {
+        html += '<button class="btn btn-xs btn-reprocess" data-bvid="' + v.bvid + '" title="重新处理">🔄 重试</button>';
+    }
+    return html;
+}
+
+function bindTableEvents() {
     videoList.querySelectorAll(".folder-cb").forEach(function (cb) {
         cb.addEventListener("change", function () {
-            var cbs = cb.closest("table").querySelectorAll(".video-cb");
-            cbs.forEach(function (vc) { vc.checked = cb.checked; });
+            cb.closest("table").querySelectorAll(".video-cb").forEach(function (vc) { vc.checked = cb.checked; });
             updateSelectedCount();
         });
     });
     videoList.querySelectorAll(".video-cb").forEach(function (cb) { cb.addEventListener("change", updateSelectedCount); });
-
-    var doneCount = 0;
-    state.videos.forEach(function (v) { if (state.processedBvids.has(v.bvid)) doneCount++; });
-    videoCount.textContent = "共 " + state.videos.length + " 个视频（已处理 " + doneCount + "）";
+    bindActionButtons();
 }
 
-/* ── 横幅 ──────────────────────────────────────────────── */
+function bindCardEvents() {
+    videoList.querySelectorAll(".video-cb").forEach(function (cb) { cb.addEventListener("change", updateSelectedCount); });
+    bindActionButtons();
+}
+
+function bindActionButtons() {
+    videoList.querySelectorAll(".btn-bilinote").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            var taskId = btn.getAttribute("data-task");
+            if (taskId) {
+                openBilinoteTask(taskId);
+            } else {
+                window.open(state.bilinoteUrl, "_blank");
+            }
+        });
+    });
+    videoList.querySelectorAll(".btn-open-file").forEach(function (btn) {
+        btn.addEventListener("click", function () { openLocalFile(btn.getAttribute("data-bvid")); });
+    });
+    videoList.querySelectorAll(".btn-reprocess").forEach(function (btn) {
+        btn.addEventListener("click", function () { reprocessVideo(btn.getAttribute("data-bvid")); });
+    });
+    videoList.querySelectorAll(".btn-force-retranscribe").forEach(function (btn) {
+        btn.addEventListener("click", function () { forceRetranscribe(btn.getAttribute("data-bvid")); });
+    });
+}
+
+async function openLocalFile(bvid) {
+    try {
+        var res = await fetch("/api/get-output-files/" + bvid);
+        var data = await res.json();
+        var files = data.files || [];
+        if (files.length === 0) {
+            showBanner("未找到本地文件，可能尚未保存", "warning");
+            return;
+        }
+        var mdFile = null;
+        for (var i = 0; i < files.length; i++) {
+            if (files[i].name === "笔记.md") { mdFile = files[i]; break; }
+        }
+        var target = mdFile || files[0];
+        var openRes = await fetch("/api/open-file?path=" + encodeURIComponent(target.path));
+        var openData = await openRes.json();
+        if (!openRes.ok) { showBanner("打开文件失败：" + (openData.error || "未知错误"), "error"); }
+    } catch (err) {
+        showBanner("获取文件信息失败：" + err.message, "error");
+    }
+}
+
+async function reprocessVideo(bvid) {
+    try {
+        await fetch("/api/checkpoint/" + bvid, { method: "DELETE" });
+        state.processedBvids.delete(bvid);
+        delete state.processedRecords[bvid];
+        renderVideoList();
+    } catch (err) {
+        showBanner("清除记录失败：" + err.message, "error");
+    }
+}
+
+async function forceRetranscribe(bvid) {
+    if (!confirm("该视频原本无字幕，BiliNotes使用了B站AI匹配字幕（可能不准确）。\n\n强制重新转写将：\n1. 删除BiliNotes容器内该视频的缓存文件\n2. 清除本地处理记录\n3. 之后可使用本地模型重新转写\n\n确定继续？")) {
+        return;
+    }
+    try {
+        var res = await fetch("/api/force-retranscribe", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ bvid: bvid })
+        });
+        var data = await res.json();
+        if (res.ok && data.ok) {
+            var cacheInfo = data.deleted_cache && data.deleted_cache.length > 0
+                ? "（已删除 " + data.deleted_cache.length + " 个缓存文件）"
+                : "";
+            showBanner("✅ 已删除缓存" + cacheInfo + "，视频已回到待处理状态，可重新处理", "success");
+            state.processedBvids.delete(bvid);
+            delete state.processedRecords[bvid];
+            renderVideoList();
+        } else {
+            showBanner("操作失败：" + (data.error || "未知错误"), "error");
+        }
+    } catch (err) {
+        showBanner("请求失败：" + err.message, "error");
+    }
+}
+
 function showBanner(m, t) { banner.textContent = m; banner.className = "banner banner-" + (t || "warning"); }
 function hideBanner() { banner.className = "banner hidden"; }
 function escapeHtml(s) { var d = document.createElement("div"); d.appendChild(document.createTextNode(s)); return d.innerHTML; }
 
-/* ── 批处理 ────────────────────────────────────────────── */
 function sleep(ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); }
 
-async function loadCheckpoint() {
-    try { var res = await fetch("/api/checkpoint"); var data = await res.json(); state.processedBvids = new Set(data.processed || []); }
-    catch (err) { state.processedBvids = new Set(); }
+async function backfillTranscriptSource() {
+    try {
+        var res = await fetch("/api/backfill-transcript-source", { method: "POST" });
+        var data = await res.json();
+        if (data.ok && data.updated > 0) {
+            var reloadRes = await fetch("/api/checkpoint");
+            var reloadData = await reloadRes.json();
+            state.processedRecords = reloadData.records || {};
+            state.processedBvids = new Set();
+            for (var bvid in state.processedRecords) {
+                if (state.processedRecords[bvid].status === "SUCCESS") {
+                    state.processedBvids.add(bvid);
+                }
+            }
+            renderVideoList();
+        }
+    } catch (err) {}
 }
 
-function updateButtons() { startBtn.disabled = state.running; stopBtn.disabled = !state.running; }
+async function loadCheckpoint() {
+    try {
+        var res = await fetch("/api/checkpoint"); var data = await res.json();
+        state.processedRecords = data.records || {};
+        state.processedBvids = new Set();
+        var needBackfill = false;
+        for (var bvid in state.processedRecords) {
+            if (state.processedRecords[bvid].status === "SUCCESS") {
+                state.processedBvids.add(bvid);
+            }
+            if (state.processedRecords[bvid].status === "SUCCESS" && !state.processedRecords[bvid].transcript_source) {
+                needBackfill = true;
+            }
+        }
+        if (needBackfill) {
+            backfillTranscriptSource();
+        }
+    } catch (err) {
+        state.processedBvids = new Set();
+        state.processedRecords = {};
+    }
+}
+
+function updateButtons() { startBtn.disabled = state.running; startSelectedBtn.disabled = state.running || getSelectedBvids().length === 0; stopBtn.disabled = !state.running; }
 
 function updateProgress() {
     var done = state.stats.success + state.stats.failed + state.stats.skipped;
@@ -290,19 +796,35 @@ function getSaveOptions() {
 }
 
 function getFormat() {
-    var fmt = ["markdown"];
-    if (saveMindmap.checked && fmt.indexOf("mindmap") === -1) fmt.push("mindmap");
+    var fmt = [];
+    if (fmtToc.checked) fmt.push("toc");
+    if (fmtSummary.checked) fmt.push("summary");
+    if (fmtScreenshot.checked) fmt.push("screenshot");
+    if (fmtLink.checked) fmt.push("link");
     return fmt;
 }
 
+function normalizeVideoUrl(url, bvid) {
+    if (url && url.indexOf("bilibili.com") !== -1) return url;
+    return "https://www.bilibili.com/video/" + bvid + "/";
+}
+
 async function submitVideo(video) {
+    var fmt = getFormat();
+    var videoUrl = normalizeVideoUrl(video.url, video.bvid);
     var body = {
-        bvid: video.bvid, title: video.title, folder: video.folder || "未分类", url: video.url,
+        bvid: video.bvid, title: video.title, folder: video.folder || "未分类", url: videoUrl,
         model_name: modelSelect.value, provider_id: providerSelect.value,
+        quality: qualitySelect.value,
+        transcriber_type: transcriberSelect.value,
+        whisper_model_size: whisperModelSelect.value || "",
         style: styleSelect.value, extras: promptInput.value,
-        format: getFormat(),
-        screenshot: optScreenshot.checked, link: optLink.checked,
+        format: fmt,
+        screenshot: fmt.indexOf("screenshot") !== -1,
+        link: fmt.indexOf("link") !== -1,
         video_understanding: optVideoUnderstanding.checked,
+        video_interval: parseInt(videoInterval.value) || 6,
+        grid_size: [parseInt(gridRows.value) || 2, parseInt(gridCols.value) || 2],
         save_options: getSaveOptions(),
         output_dir: outputDirInput.value.trim() || "./output",
     };
@@ -329,28 +851,34 @@ function pollTaskStatus(taskId, timeoutMs) {
 
 function stopBatch() { state.stopRequested = true; addLog("用户请求停止，完成当前任务后结束...", "warning"); stopBtn.disabled = true; }
 
-async function startBatch() {
+async function startBatch(selectedOnly) {
     if (state.running) return;
     if (!providerSelect.value) { showBanner("请先选择供应商和模型", "warning"); return; }
     if (!modelSelect.value) { showBanner("请先选择模型", "warning"); return; }
+    saveConfig();
 
-    var selBvids = getSelectedBvids();
-    var batch = selBvids.length > 0
-        ? (function () { var s = new Set(selBvids); return state.videos.filter(function (v) { return s.has(v.bvid); }); })()
-        : state.videos;
+    var batch;
+    if (selectedOnly) {
+        var selBvids = getSelectedBvids();
+        if (selBvids.length === 0) { showBanner("请先勾选要处理的视频", "warning"); return; }
+        var selSet = new Set(selBvids);
+        batch = state.videos.filter(function (v) { return selSet.has(v.bvid); });
+    } else {
+        batch = state.videos.slice();
+    }
 
     var skipCount = 0;
     for (var i = 0; i < batch.length; i++) { if (state.processedBvids.has(batch[i].bvid)) skipCount++; }
     var willProcess = batch.length - skipCount;
-    if (willProcess === 0) { showBanner("所选视频已全部处理完毕", "warning"); return; }
+    if (willProcess === 0 && !selectedOnly) { showBanner("所有视频已全部处理完毕", "warning"); return; }
 
     state.running = true; state.stopRequested = false; state.currentIndex = 0;
-    state.stats = { total: willProcess, success: 0, failed: 0, skipped: 0 };
+    state.stats = { total: selectedOnly ? batch.length : willProcess, success: 0, failed: 0, skipped: 0 };
     state.outputDir = outputDirInput.value.trim() || "./output";
 
     progressSection.style.display = "block"; logArea.innerHTML = "";
     updateButtons(); updateProgress();
-    addLog("批量处理开始 — " + willProcess + " 个/选中 " + batch.length + " — 输出: " + state.outputDir, "info");
+    addLog("批量处理开始 — " + (selectedOnly ? "选中 " + batch.length : "全部待处理 " + willProcess) + " — 输出: " + state.outputDir, "info");
 
     var processed = 0;
     for (var i = 0; i < batch.length; i++) {
@@ -358,24 +886,220 @@ async function startBatch() {
         if (!state.running || state.stopRequested) break;
         var video = batch[i];
 
-        if (state.processedBvids.has(video.bvid)) {
+        if (!selectedOnly && state.processedBvids.has(video.bvid)) {
             addLog("[" + (i + 1) + "/" + batch.length + "] 跳过已处理: " + video.title, "skip");
             state.stats.skipped++; processed++; continue;
         }
 
-        addLog("[" + (i + 1) + "/" + batch.length + "] " + video.title, "info");
+        addLog("[" + (i + 1) + "/" + batch.length + "] " + video.title + " (" + video.bvid + ")", "info");
         try {
             var taskId = await submitVideo(video);
+            addLog("  → 已提交 BiliNote, task_id: " + taskId.substring(0, 8) + "...", "info");
             var result = await pollTaskStatus(taskId, 900000);
             if (result.status === "SUCCESS") {
-                addLog("完成: " + video.title + " — BiliNote: http://localhost:3015", "success");
-                state.processedBvids.add(video.bvid); state.stats.success++;
-            } else { addLog("失败: " + video.title, "error"); state.stats.failed++; }
-        } catch (err) { addLog("错误: " + video.title + " - " + err.message, "error"); state.stats.failed++; }
-        processed++; updateProgress();
+                addLog("  ✓ 完成: " + video.title + " — BiliNote 可查看", "success");
+                state.processedBvids.add(video.bvid);
+                var ts = result.transcript_source || "";
+                state.processedRecords[video.bvid] = { status: "SUCCESS", task_id: taskId, time: new Date().toISOString(), transcript_source: ts };
+                state.stats.success++;
+            } else {
+                var errMsg = result.error || result.msg || "未知错误";
+                addLog("  ✗ 失败: " + video.title + " — " + errMsg, "error");
+                state.processedRecords[video.bvid] = { status: "FAILED", task_id: taskId, time: new Date().toISOString() };
+                state.stats.failed++;
+            }
+        } catch (err) { addLog("  ✗ 错误: " + video.title + " - " + err.message, "error"); state.processedRecords[video.bvid] = { status: "FAILED", time: new Date().toISOString() }; state.stats.failed++; }
+        processed++; updateProgress(); renderVideoList();
         if (i < batch.length - 1 && state.running && !state.stopRequested) await sleep(3000);
     }
 
     state.running = false; updateButtons(); renderVideoList();
-    addLog("批量处理结束 — 成功 " + state.stats.success + " 失败 " + state.stats.failed + " 跳过 " + state.stats.skipped, "info");
+    addLog("批量处理结束 — ✓ " + state.stats.success + " ✗ " + state.stats.failed + " 跳 " + state.stats.skipped, "info");
+}
+
+async function pickExportDir() {
+    try {
+        var handle = await window.showDirectoryPicker();
+        $("export-dir").value = handle.name;
+    } catch (e) {
+        try {
+            var res = await fetch("/api/pick-directory"); var data = await res.json();
+            if (data.path) $("export-dir").value = data.path;
+        } catch (e2) {}
+    }
+}
+
+async function copyFiles(fileType) {
+    var destDir = $("export-dir").value.trim();
+    if (!destDir) {
+        showBanner("请先选择或输入导出目标目录", "warning");
+        return;
+    }
+    var typeNames = { md: "笔记", txt: "字幕", json: "JSON", mindmap: "思维导图" };
+    try {
+        var res = await fetch("/api/copy-files", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ dest_dir: destDir, file_type: fileType }),
+        });
+        var data = await res.json();
+        if (!res.ok) { showBanner("复制失败：" + (data.error || "未知错误"), "error"); return; }
+        if (data.copied > 0) {
+            showBanner("已复制 " + data.copied + " 个" + typeNames[fileType] + "文件到 " + destDir, "warning");
+            setTimeout(hideBanner, 3000);
+        } else {
+            showBanner("没有找到可复制的" + typeNames[fileType] + "文件", "warning");
+        }
+        if (data.errors && data.errors.length > 0) {
+            addLog("复制部分文件出错: " + data.errors.join("; "), "error");
+        }
+    } catch (err) {
+        showBanner("复制请求失败：" + err.message, "error");
+    }
+}
+
+async function syncToBilinotesDB() {
+    var btn = $("sync-bilinotes-btn");
+    btn.disabled = true;
+    btn.textContent = "⏳ 准备中...";
+    try {
+        var res = await fetch("/api/bilinotes-sync");
+        var data = await res.json();
+        if (!data.tasks || data.tasks.length === 0) {
+            showBanner("没有可同步的任务", "warning");
+            btn.disabled = false;
+            btn.textContent = "🔄 同步";
+            return;
+        }
+        var syncApiBase = window.location.origin + "/api/bilinotes-sync";
+        var script = [
+            '(function(){',
+            'var API="' + syncApiBase + '";',
+            'var BATCH=15;',
+            'var dbReq=indexedDB.open("keyval-store");',
+            'dbReq.onupgradeneeded=function(e){e.target.result.createObjectStore("keyval")};',
+            'dbReq.onsuccess=function(e){',
+            'var db=e.target.result;',
+            'var gr=db.transaction("keyval","readonly").objectStore("keyval").get("task-storage");',
+            'gr.onsuccess=function(ev){',
+            'var raw=ev.target.result,ex;',
+            'if(typeof raw==="string"){try{ex=JSON.parse(raw)}catch(x){ex=null}}',
+            'else if(raw&&typeof raw==="object"){ex=raw}else{ex=null}',
+            'if(!ex||!ex.state||!Array.isArray(ex.state.tasks)){ex={state:{tasks:[],currentTaskId:null},version:0}}',
+            'var ids=new Set(ex.state.tasks.map(function(t){return t.id}));',
+            'var p=Array.from(ids).join(",");',
+            'var url=API+(p?"?existing_ids="+encodeURIComponent(p):"");',
+            'fetch(url).then(function(r){return r.json()}).then(function(d){',
+            'if(!d.tasks||d.tasks.length===0){alert("Already up to date");return}',
+            'var add=d.tasks.filter(function(t){return!ids.has(t.id)});',
+            'if(add.length===0){alert("Already up to date");return}',
+            'var i=0;',
+            'function wb(){',
+            'var b=add.slice(i,i+BATCH);',
+            'if(b.length===0){alert("Done! "+add.length+" tasks synced. Refresh page.");return}',
+            'b.forEach(function(t){ex.state.tasks.unshift(t)});',
+            'var tx=db.transaction("keyval","readwrite");',
+            'tx.objectStore("keyval").put(JSON.stringify(ex),"task-storage");',
+            'tx.oncomplete=function(){i+=BATCH;console.log(i+"/"+add.length);setTimeout(wb,80)}',
+            '}',
+            'wb()',
+            '}).catch(function(er){alert("Fetch error: "+er)})',
+            '};',
+            '};',
+            'dbReq.onerror=function(){alert("Cannot open IndexedDB")}',
+            '})()'
+        ].join("");
+
+        window.open(state.bilinoteUrl, "_blank");
+        var ta = document.createElement("textarea");
+        ta.value = script;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+
+        showBanner("✅ 同步脚本已复制！已打开 BiliNotes 页面，请按 F12 → Console → Ctrl+V → Enter", "success");
+    } catch (err) {
+        showBanner("同步请求失败：" + err.message, "error");
+    }
+    btn.disabled = false;
+    btn.textContent = "🔄 同步";
+}
+
+function openSyncModal() {
+    $("sync-modal").classList.remove("hidden");
+    $("sync-status").textContent = "";
+}
+
+function closeSyncModal() {
+    $("sync-modal").classList.add("hidden");
+}
+
+async function copySyncScript() {
+    var statusEl = $("sync-status");
+    statusEl.textContent = "正在检查增量数据...";
+    try {
+        var res = await fetch("/api/bilinotes-sync");
+        var data = await res.json();
+        if (!data.tasks || data.tasks.length === 0) {
+            statusEl.textContent = "没有可同步的任务";
+            return;
+        }
+        var syncApiBase = window.location.origin + "/api/bilinotes-sync";
+        var script = [
+            '(function(){',
+            '  var API="' + syncApiBase + '";',
+            '  var BATCH=15;',
+            '  var dbReq=indexedDB.open("keyval-store");',
+            '  dbReq.onupgradeneeded=function(e){e.target.result.createObjectStore("keyval");};',
+            '  dbReq.onsuccess=function(e){',
+            '    var db=e.target.result;',
+            '    var getReq=db.transaction("keyval","readonly").objectStore("keyval").get("task-storage");',
+            '    getReq.onsuccess=function(ev){',
+            '      var raw=ev.target.result,existing;',
+            '      if(typeof raw==="string"){try{existing=JSON.parse(raw)}catch(x){existing=null}}',
+            '      else if(raw&&typeof raw==="object"){existing=raw}else{existing=null}',
+            '      if(!existing||!existing.state||!Array.isArray(existing.state.tasks)){existing={state:{tasks:[],currentTaskId:null},version:0}}',
+            '      var existingIds=new Set(existing.state.tasks.map(function(t){return t.id}));',
+            '      var idsParam=Array.from(existingIds).join(",");',
+            '      var url=API+(idsParam?"?existing_ids="+encodeURIComponent(idsParam):"");',
+            '      fetch(url).then(function(r){return r.json()}).then(function(d){',
+            '        if(!d.tasks||d.tasks.length===0){alert("✅ 已是最新，无需同步");return}',
+            '        var toAdd=d.tasks.filter(function(t){return !existingIds.has(t.id)});',
+            '        if(toAdd.length===0){alert("✅ 已是最新，无需同步");return}',
+            '        var idx=0;',
+            '        function writeBatch(){',
+            '          var batch=toAdd.slice(idx,idx+BATCH);',
+            '          if(batch.length===0){alert("✅ 同步完成！新增"+toAdd.length+"个任务\\n请刷新页面查看");return}',
+            '          batch.forEach(function(t){existing.state.tasks.unshift(t)});',
+            '          var tx=db.transaction("keyval","readwrite");',
+            '          tx.objectStore("keyval").put(JSON.stringify(existing),"task-storage");',
+            '          tx.oncomplete=function(){idx+=BATCH;console.log("已同步"+Math.min(idx,toAdd.length)+"/"+toAdd.length);setTimeout(writeBatch,80)};',
+            '        }',
+            '        writeBatch();',
+            '      }).catch(function(err){console.error("❌ 获取数据失败:",err)});',
+            '    };',
+            '  };',
+            '  dbReq.onerror=function(){console.error("❌ 无法打开IndexedDB")};',
+            '})();'
+        ].join("\n");
+
+        var ta = document.createElement("textarea");
+        ta.value = script;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+            document.execCommand("copy");
+            statusEl.textContent = "✅ 脚本已复制！请到 BiliNotes 控制台粘贴执行（自动增量同步）";
+        } catch (e) {
+            statusEl.textContent = "⚠️ 自动复制失败";
+            prompt("请复制以下脚本：", script);
+        }
+        document.body.removeChild(ta);
+    } catch (err) {
+        statusEl.textContent = "❌ 获取任务数据失败：" + err.message;
+    }
 }

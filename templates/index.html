@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,90 +10,129 @@
 
 <div id="banner" class="banner hidden"></div>
 
-<div class="container">
+<div class="app">
     <header class="header">
-        <h1>BiliNote 批量收藏转写</h1>
-        <div class="file-section">
-            <button id="select-file-btn" class="btn btn-primary">选择收藏文件</button>
-            <input type="file" id="file-input" accept=".json,.csv" hidden>
+        <div class="header-brand">
+            <h1 class="header-title">BiliNote <span class="header-accent">批量转写</span></h1>
+            <span class="header-sub">批量导入 · 自动处理 · 一键导出</span>
+        </div>
+        <div class="header-actions">
             <span id="file-name" class="file-name"></span>
+            <button id="select-file-btn" class="btn btn-primary">📂 选择收藏文件</button>
+            <input type="file" id="file-input" accept=".json,.csv" hidden>
+            <button id="bilinote-link-btn" class="btn btn-ghost" title="打开 BiliNote">🔗 BiliNote</button>
+            <button id="sync-bilinotes-btn" class="btn btn-ghost" title="同步到 BiliNotes 前端">🔄 同步</button>
+            <button id="theme-toggle" class="btn btn-icon" title="切换主题">🌙</button>
         </div>
     </header>
 
-    <section class="config-section">
-        <div class="config-row">
-            <div class="config-group">
-                <label for="provider-select">供应商</label>
-                <select id="provider-select">
-                    <option value="">-- 请先加载文件 --</option>
-                </select>
-            </div>
-            <div class="config-group">
-                <label for="model-select">模型</label>
-                <select id="model-select" disabled>
-                    <option value="">-- 请先选择供应商 --</option>
-                </select>
-            </div>
-        </div>
-        <div class="config-row">
-            <div class="config-group">
-                <label for="style-select">笔记风格</label>
-                <select id="style-select">
-                    <option value="detailed">详细笔记（默认）</option>
-                    <option value="concise">简洁摘要</option>
-                    <option value="detailed">思维导图式</option>
-                    <option value="detailed">学习笔记</option>
-                    <option value="detailed">技术文档风格</option>
-                </select>
-            </div>
-            <div class="config-group">
-                <label for="prompt-input">额外提示词</label>
-                <textarea id="prompt-input" placeholder="自定义提示词（可选）" rows="2"></textarea>
-            </div>
-        </div>
-        <div class="config-row options-row">
-            <div class="config-group">
-                <label>BiliNote 生成选项</label>
-                <div class="checkbox-group">
-                    <label class="cb-label"><input type="checkbox" id="opt-screenshot"> 视频截图</label>
-                    <label class="cb-label"><input type="checkbox" id="opt-link"> 标注链接</label>
-                    <label class="cb-label"><input type="checkbox" id="opt-video-understanding"> 视频理解</label>
+    <div class="config-grid">
+        <section class="panel config-left">
+            <div class="panel-title">🤖 模型配置</div>
+            <div class="field-group">
+                <div class="field">
+                    <label for="provider-select">供应商</label>
+                    <select id="provider-select"><option value="">-- 选择供应商 --</option></select>
+                </div>
+                <div class="field">
+                    <label for="model-select">LLM 模型</label>
+                    <select id="model-select" disabled><option value="">-- 请先选择供应商 --</option></select>
                 </div>
             </div>
-            <div class="config-group">
-                <label>保存内容</label>
-                <div class="checkbox-group">
-                    <label class="cb-label"><input type="checkbox" id="save-md" checked> 笔记 Markdown</label>
-                    <label class="cb-label"><input type="checkbox" id="save-txt" checked> 原文/字幕</label>
-                    <label class="cb-label"><input type="checkbox" id="save-json" checked> 完整 JSON</label>
-                    <label class="cb-label"><input type="checkbox" id="save-mindmap"> 思维导图</label>
+            <div class="panel-title" style="margin-top:16px">🎙️ 转写配置</div>
+            <div class="field-group">
+                <div class="field">
+                    <label for="transcriber-select">转写引擎</label>
+                    <select id="transcriber-select"><option value="">-- 加载中 --</option></select>
+                </div>
+                <div class="field">
+                    <label for="whisper-model-select">转写模型</label>
+                    <select id="whisper-model-select"><option value="">-- 加载中 --</option></select>
+                </div>
+                <div class="field">
+                    <label for="quality-select">音频质量</label>
+                    <select id="quality-select">
+                        <option value="fast">快速</option>
+                        <option value="medium" selected>中等</option>
+                        <option value="slow">慢速</option>
+                    </select>
                 </div>
             </div>
-        </div>
-    </section>
+        </section>
 
-    <section class="batch-section">
-        <div class="config-row">
-            <div class="config-group" style="flex:2">
+        <section class="panel config-right">
+            <div class="panel-title">✏️ 笔记风格</div>
+            <div class="field-group">
+                <div class="field">
+                    <label for="style-select">风格</label>
+                    <select id="style-select">
+                        <option value="minimal">精简</option>
+                        <option value="detailed" selected>详细</option>
+                        <option value="tutorial">教程</option>
+                        <option value="academic">学术</option>
+                        <option value="xiaohongshu">小红书</option>
+                        <option value="life_journal">生活向</option>
+                        <option value="task_oriented">任务导向</option>
+                        <option value="business">商业风格</option>
+                        <option value="meeting_minutes">会议纪要</option>
+                    </select>
+                </div>
+                <div class="field" style="flex:2">
+                    <label for="prompt-input">额外提示词</label>
+                    <textarea id="prompt-input" placeholder="自定义提示词（可选）" rows="1"></textarea>
+                </div>
+            </div>
+            <div class="panel-title" style="margin-top:16px">📦 格式与保存</div>
+            <div class="field-group options-row">
+                <div class="field">
+                    <label>格式选项</label>
+                    <div class="checkbox-group">
+                        <label class="cb-label"><input type="checkbox" id="fmt-toc"> 目录</label>
+                        <label class="cb-label"><input type="checkbox" id="fmt-summary"> AI 总结</label>
+                        <label class="cb-label" id="screenshot-label"><input type="checkbox" id="fmt-screenshot"> 截图 <span class="hint" id="screenshot-hint"></span></label>
+                        <label class="cb-label"><input type="checkbox" id="fmt-link"> 跳转</label>
+                    </div>
+                </div>
+                <div class="field">
+                    <label>保存内容</label>
+                    <div class="checkbox-group">
+                        <label class="cb-label"><input type="checkbox" id="save-md" checked> Markdown</label>
+                        <label class="cb-label"><input type="checkbox" id="save-txt" checked> 原文</label>
+                        <label class="cb-label"><input type="checkbox" id="save-json" checked> JSON</label>
+                        <label class="cb-label"><input type="checkbox" id="save-mindmap"> 导图</label>
+                    </div>
+                </div>
+                <div class="field">
+                    <label>视频理解</label>
+                    <div class="checkbox-group video-understanding-group">
+                        <label class="cb-label" id="vu-label"><input type="checkbox" id="opt-video-understanding"> 启用 <span class="hint" id="vu-hint"></span></label>
+                        <label class="cb-label inline-field">间隔 <input type="number" id="video-interval" value="6" min="1" max="30"> 秒</label>
+                        <label class="cb-label inline-field">网格 <input type="number" id="grid-rows" value="2" min="1" max="6"> × <input type="number" id="grid-cols" value="2" min="1" max="6"></label>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <section class="panel batch-bar">
+        <div class="batch-bar-inner">
+            <div class="field output-dir-field">
                 <label for="output-dir">输出目录</label>
-                <div class="output-dir-row">
+                <div class="input-with-btn">
                     <input type="text" id="output-dir" value="./output">
-                    <button id="pick-dir-btn" class="btn btn-sm">浏览...</button>
+                    <button id="pick-dir-btn" class="btn btn-sm">浏览</button>
                 </div>
             </div>
-            <div class="config-group batch-buttons">
-                <label>&nbsp;</label>
-                <div style="display:flex;gap:8px;">
-                    <button id="start-btn" class="btn btn-primary">开始批量处理</button>
-                    <button id="stop-btn" class="btn btn-danger" disabled>停止</button>
-                    <button id="bilinote-link-btn" class="btn btn-sm" style="background:var(--bg-tertiary);color:var(--text-secondary)" title="打开 BiliNote">打开 BiliNote</button>
-                </div>
+            <div class="batch-actions">
+                <button id="start-btn" class="btn btn-primary btn-lg">▶ 处理全部待处理</button>
+                <button id="start-selected-btn" class="btn btn-primary btn-lg" disabled>▶ 处理选中 (<span id="selected-count-btn">0</span>)</button>
+                <button id="stop-btn" class="btn btn-danger btn-lg" disabled>⏹ 停止</button>
             </div>
         </div>
     </section>
 
-    <section id="progress-section" class="progress-section" style="display:none">
-        <h2>处理进度</h2>
+    <section id="progress-section" class="panel progress-section" style="display:none">
+        <div class="panel-title">📊 处理进度</div>
         <div class="progress-bar-container">
             <div id="progress-bar" class="progress-bar" style="width:0%"></div>
         </div>
@@ -107,33 +146,85 @@
         <div id="log-area" class="log-area"></div>
     </section>
 
-    <section class="video-section">
+    <section class="panel video-section">
         <div class="video-header">
-            <h2>视频列表</h2>
-            <span id="video-count" class="video-count">共 0 个视频</span>
+            <div class="video-header-left">
+                <h2>📋 视频列表</h2>
+                <span id="video-count" class="video-count">共 0 个视频</span>
+            </div>
+            <div class="view-toggle">
+                <button id="view-table" class="view-btn active" title="列表视图">&#9776;</button>
+                <button id="view-card" class="view-btn" title="卡片视图">&#9638;</button>
+            </div>
         </div>
         <div id="video-toolbar" class="video-toolbar" style="display:none">
             <label class="cb-label"><input type="checkbox" id="select-all"> 全选</label>
+            <div class="filter-chips">
+                <button class="filter-chip active" data-filter="all">全部</button>
+                <button class="filter-chip" data-filter="pending">待处理</button>
+                <button class="filter-chip" data-filter="done">已处理</button>
+                <button class="filter-chip" data-filter="failed">失败</button>
+                <button class="filter-chip" data-filter="ai_subtitle">⚠️ AI匹配</button>
+            </div>
             <input type="text" id="search-input" class="search-input" placeholder="搜索 BV 号或标题...">
-            <select id="status-filter" class="status-filter">
-                <option value="all">全部</option>
-                <option value="pending">待处理</option>
-                <option value="done">已处理</option>
-            </select>
             <span id="selected-count" class="selected-count"></span>
         </div>
         <div id="video-list" class="video-list">
             <div class="empty-state">
+                <div class="empty-icon">📂</div>
                 <p class="empty-title">欢迎使用 BiliNote 批量收藏转写</p>
                 <ol class="empty-guide">
                     <li>从 <strong>Bilishelf</strong> 浏览器插件导出收藏文件（JSON 或 CSV）</li>
                     <li>点击上方 <strong>"选择收藏文件"</strong> 加载数据</li>
-                    <li>选择 <strong>供应商</strong> 和 <strong>模型</strong></li>
-                    <li>点击 <strong>"开始批量处理"</strong> 一键生成笔记</li>
+                    <li>选择 <strong>供应商</strong>、<strong>模型</strong> 和 <strong>转写配置</strong></li>
+                    <li>点击 <strong>"处理全部待处理"</strong> 或选中视频后 <strong>"处理选中"</strong></li>
                 </ol>
             </div>
         </div>
     </section>
+
+    <section class="panel export-section">
+        <div class="panel-title">📤 文件导出</div>
+        <div class="export-row">
+            <div class="field export-dir-field">
+                <label for="export-dir">导出目标目录</label>
+                <div class="input-with-btn">
+                    <input type="text" id="export-dir" placeholder="选择或输入目标目录路径">
+                    <button id="pick-export-dir-btn" class="btn btn-sm">浏览</button>
+                </div>
+            </div>
+            <div class="export-buttons">
+                <button id="copy-md-btn" class="btn btn-ghost" title="复制所有 Markdown 笔记文件">📄 笔记</button>
+                <button id="copy-txt-btn" class="btn btn-ghost" title="复制所有字幕/原文文件">📝 字幕</button>
+                <button id="copy-json-btn" class="btn btn-ghost" title="复制所有 JSON 完整数据">{ } JSON</button>
+                <button id="copy-mindmap-btn" class="btn btn-ghost" title="复制所有思维导图文件">🗺️ 导图</button>
+            </div>
+        </div>
+    </section>
+
+    <div id="sync-modal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>🔄 同步任务到 BiliNotes</h3>
+                <button id="sync-modal-close" class="btn btn-icon">✕</button>
+            </div>
+            <div class="modal-body">
+                <p class="sync-hint">将批量工具处理的任务同步到 BiliNotes 前端，使其在 BiliNotes 历史列表中可见。</p>
+                <ol class="sync-steps">
+                    <li>点击下方 <strong>"复制同步脚本"</strong></li>
+                    <li>打开 <strong>BiliNotes</strong> 页面（点击右上角 🔗 BiliNote 按钮）</li>
+                    <li>按 <strong>F12</strong> 打开浏览器开发者工具，切换到 <strong>Console（控制台）</strong></li>
+                    <li>粘贴脚本并按 <strong>Enter</strong> 执行</li>
+                    <li>刷新 BiliNotes 页面，任务将出现在历史列表中</li>
+                </ol>
+                <div class="sync-actions">
+                    <button id="sync-copy-btn" class="btn btn-primary">📋 复制同步脚本</button>
+                    <span id="sync-status" class="sync-status"></span>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 
 <script src="/static/js/app.js"></script>
