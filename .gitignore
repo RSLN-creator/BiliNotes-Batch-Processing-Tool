@@ -1,6 +1,18 @@
+# Python
 __pycache__/
+*.pyc
+
+# IDE / AI
 .trae/
+.planning/
+.claude/
+
+# Bilishelf 导出数据（勿提交个人收藏）
 *.csv
+*.json
+
+# 输出目录（已处理结果）
 output/
 
-竞赛+正在学.json
+# 外部需求文档
+按要求执行.md
