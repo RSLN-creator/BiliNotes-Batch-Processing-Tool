@@ -891,15 +891,15 @@ async function startBatch(selectedOnly) {
     var skipCount = 0;
     for (var i = 0; i < batch.length; i++) { if (state.processedBvids.has(batch[i].bvid)) skipCount++; }
     var willProcess = batch.length - skipCount;
-    if (willProcess === 0 && !selectedOnly) { showBanner("所有视频已全部处理完毕", "warning"); return; }
+    if (willProcess === 0) { showBanner("所选视频已全部处理完毕", "warning"); return; }
 
     state.running = true; state.stopRequested = false; state.currentIndex = 0;
-    state.stats = { total: selectedOnly ? batch.length : willProcess, success: 0, failed: 0, skipped: 0 };
+    state.stats = { total: batch.length, success: 0, failed: 0, skipped: 0 };
     state.outputDir = outputDirInput.value.trim() || "./output";
 
     progressSection.style.display = "block"; logArea.innerHTML = "";
     updateButtons(); updateProgress();
-    addLog("批量处理开始 — " + (selectedOnly ? "选中 " + batch.length : "全部待处理 " + willProcess) + " — 输出: " + state.outputDir, "info");
+    addLog("批量处理开始 — 共 " + batch.length + " 个（其中 " + willProcess + " 个待处理） — 输出: " + state.outputDir, "info");
 
     var processed = 0;
     for (var i = 0; i < batch.length; i++) {
@@ -907,7 +907,7 @@ async function startBatch(selectedOnly) {
         if (!state.running || state.stopRequested) break;
         var video = batch[i];
 
-        if (!selectedOnly && state.processedBvids.has(video.bvid)) {
+        if (state.processedBvids.has(video.bvid)) {
             addLog("[" + (i + 1) + "/" + batch.length + "] 跳过已处理: " + video.title, "skip");
             state.stats.skipped++; processed++; continue;
         }
