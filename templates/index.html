@@ -3,6 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer">
+    <link rel="icon" type="image/png" href="/static/solar_refresh-bold-duotone.png">
     <title>BiliNote 批量收藏转写</title>
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
@@ -90,7 +92,7 @@
                         <label class="cb-label"><input type="checkbox" id="fmt-toc"> 目录</label>
                         <label class="cb-label"><input type="checkbox" id="fmt-summary"> AI 总结</label>
                         <label class="cb-label" id="screenshot-label"><input type="checkbox" id="fmt-screenshot"> 截图 <span class="hint" id="screenshot-hint"></span></label>
-                        <label class="cb-label"><input type="checkbox" id="fmt-link"> 跳转</label>
+                        <label class="cb-label"><input type="checkbox" id="fmt-link"> 跳转时间轴（不建议开启：影响md目录）</label>
                     </div>
                 </div>
                 <div class="field">
@@ -166,7 +168,7 @@
                 <button class="filter-chip" data-filter="failed">失败</button>
                 <button class="filter-chip" data-filter="ai_subtitle">⚠️ AI匹配</button>
             </div>
-            <input type="text" id="search-input" class="search-input" placeholder="搜索 BV 号或标题...">
+            <input type="text" id="search-input" class="search-input" placeholder="搜索 BV号或UP(UID)或标题...">
             <span id="selected-count" class="selected-count"></span>
         </div>
         <div id="video-list" class="video-list">
@@ -223,6 +225,19 @@
                     <span id="sync-status" class="sync-status"></span>
                 </div>
             </div>
+        </div>
+    </div>
+</div>
+
+<div id="help-modal" class="modal hidden">
+    <div class="modal-overlay"></div>
+    <div class="modal-content help-modal-content">
+        <div class="modal-header">
+            <h3>📖 帮助文档</h3>
+            <button id="help-modal-close" class="btn btn-icon">✕</button>
+        </div>
+        <div class="modal-body">
+            <div id="help-content" class="help-content">加载中...</div>
         </div>
     </div>
 </div>

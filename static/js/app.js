@@ -17,10 +17,14 @@ var state = {
     searchQuery: "",
     statusFilter: "all",
     viewMode: "table",
+    currentPage: 1,
+    pageSize: 30,
     bilinoteUrl: "http://localhost:3015",
     transcriberConfig: null,
     transcriberModels: null,
     currentModelName: "",
+    videoPageSelections: {},
+    folderFilter: "",
 };
 
 var fileInput, selectFileBtn, fileName;
@@ -98,6 +102,8 @@ document.addEventListener("DOMContentLoaded", function () {
     $("sync-modal-close").addEventListener("click", closeSyncModal);
     $("sync-copy-btn").addEventListener("click", copySyncScript);
     $("sync-modal").querySelector(".modal-overlay").addEventListener("click", closeSyncModal);
+    $("help-modal-close").addEventListener("click", closeHelpModal);
+    $("help-modal").querySelector(".modal-overlay").addEventListener("click", closeHelpModal);
     selectAllCb.addEventListener("change", onSelectAll);
     searchInput.addEventListener("input", onSearchFilter);
     viewTableBtn.addEventListener("click", function () { switchView("table"); });
@@ -109,9 +115,86 @@ document.addEventListener("DOMContentLoaded", function () {
             document.querySelectorAll(".filter-chip").forEach(function (c) { c.classList.remove("active"); });
             chip.classList.add("active");
             state.statusFilter = chip.getAttribute("data-filter");
+            state.currentPage = 1;
             selectAllCb.checked = false;
             renderVideoList();
         });
+    });
+
+    // 动态添加多P视频筛选芯片
+    var filterChips = document.querySelector(".filter-chips");
+    if (filterChips) {
+        var mpChip = document.createElement("button");
+        mpChip.className = "filter-chip";
+        mpChip.setAttribute("data-filter", "multi_p");
+        mpChip.innerHTML = "多P视频";
+        mpChip.addEventListener("click", function () {
+            document.querySelectorAll(".filter-chip").forEach(function (c) { c.classList.remove("active"); });
+            mpChip.classList.add("active");
+            state.statusFilter = "multi_p";
+            state.currentPage = 1;
+            selectAllCb.checked = false;
+            renderVideoList();
+        });
+        filterChips.appendChild(mpChip);
+    }
+
+    // 文件夹筛选下拉（视图切换旁，包裹在同一容器避免 space-between 推远）
+    var viewToggle = document.querySelector(".view-toggle");
+    if (viewToggle) {
+        var wrapper = document.createElement("div");
+        wrapper.style.cssText = "display:flex;align-items:center;gap:6px;";
+        var folderSel = document.createElement("select");
+        folderSel.id = "folder-filter-select";
+        folderSel.style.cssText = "padding:5px 10px;font-size:0.82rem;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:8px;max-width:140px;cursor:pointer;";
+        folderSel.addEventListener("change", function () {
+            state.folderFilter = this.value;
+            state.currentPage = 1;
+            selectAllCb.checked = false;
+            renderVideoList();
+        });
+        viewToggle.parentNode.insertBefore(wrapper, viewToggle);
+        wrapper.appendChild(folderSel);
+        wrapper.appendChild(viewToggle);
+    }
+
+    // 悬浮目录导航
+    var tocHtml = '<div id="floating-toc" class="floating-toc">';
+    tocHtml += '<button id="toc-toggle" class="toc-toggle-btn" title="页面导航">📑</button>';
+    tocHtml += '<div id="toc-panel" class="toc-panel hidden">';
+    tocHtml += '<a class="toc-item" data-target="config-grid">🤖 模型与转写配置</a>';
+    tocHtml += '<a class="toc-item" data-target="batch-bar">🚀 执行控制台</a>';
+    tocHtml += '<a class="toc-item" data-target="progress-section">📊 处理进度</a>';
+    tocHtml += '<a class="toc-item" data-target="video-section">📋 视频列表</a>';
+    tocHtml += '<a class="toc-item" data-target="export-section">📤 文件导出</a>';
+    tocHtml += '<a class="toc-item toc-item-help" data-target="help-modal">📖 帮助文档</a>';
+    tocHtml += '</div></div>';
+    var tocContainer = document.createElement("div");
+    tocContainer.innerHTML = tocHtml;
+    document.body.appendChild(tocContainer.firstElementChild);
+
+    $("toc-toggle").addEventListener("click", function () {
+        var panel = $("toc-panel");
+        panel.classList.toggle("hidden");
+    });
+    document.querySelectorAll(".toc-item").forEach(function (item) {
+        item.addEventListener("click", function () {
+            var targetName = this.getAttribute("data-target");
+            if (targetName === "help-modal") {
+                openHelpModal();
+            } else {
+                var target = document.querySelector("." + targetName);
+                if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+            }
+            $("toc-panel").classList.add("hidden");
+        });
+    });
+    // 点击页面其他地方关闭TOC
+    document.addEventListener("click", function (e) {
+        if (!e.target.closest("#floating-toc")) {
+            var panel = $("toc-panel");
+            if (panel) panel.classList.add("hidden");
+        }
     });
 
     window.addEventListener("message", onBilinoteMessage);
@@ -277,7 +360,8 @@ async function loadFile(file) {
             showBanner("文件中未找到有效视频数据", "error"); return;
         }
         state.videos = videos;
-        state.searchQuery = ""; state.statusFilter = "all";
+        state.videoPageSelections = {};
+        state.folderFilter = ""; state.searchQuery = ""; state.statusFilter = "all"; state.currentPage = 1;
         searchInput.value = ""; selectAllCb.checked = false;
         document.querySelectorAll(".filter-chip").forEach(function (c) { c.classList.remove("active"); });
         document.querySelector('.filter-chip[data-filter="all"]').classList.add("active");
@@ -288,11 +372,7 @@ async function loadFile(file) {
 }
 
 function cleanFolderName(name) {
-    if (name && name[0] >= "0" && name[0] <= "9") {
-        var idx = name.indexOf("-");
-        return idx >= 0 ? name.substring(idx + 1) : name;
-    }
-    return name;
+    return name || "未分类";
 }
 
 function parseJsonFrontend(text) {
@@ -304,18 +384,40 @@ function parseJsonFrontend(text) {
         var name = cleanFolderName(f.name || "");
         folderMap[f.id] = name || "默认";
     }
+    // 构建 videoId → folderId 映射（兼容 folderItems 格式）
+    var vidToFid = {};
+    var folderItems = data.folderItems || [];
+    for (var k = 0; k < folderItems.length; k++) {
+        vidToFid[folderItems[k].videoId] = folderItems[k].folderId;
+    }
     var videos = [];
     var items = data.videos || [];
     for (var j = 0; j < items.length; j++) {
         var v = items[j];
         var bvid = (v.bvid || "").trim();
         if (!bvid) continue;
-        var fid = v.folderId || v.folder_id || 1;
+        // 优先级：folderItems映射 > folderId字段 > 0=未分类
+        var fid = vidToFid[v.id] || v.folderId || v.folder_id || 0;
+        var cover = v.coverUrl || v.cover || v.pic || "";
+        if (typeof cover === "string") cover = cover.trim();
+        var ownerName = (v.uploader || "").trim();
+        var ownerMid = "";
+        var spaceUrl = v.uploaderSpaceUrl || "";
+        var m = spaceUrl.match(/space\.bilibili\.com\/(\d+)/);
+        if (m) ownerMid = m[1];
+        var pageCount = parseInt(v.page) || 1;
+        var description = (v.description || "").trim();
+        if (!description) description = "";
         videos.push({
             bvid: bvid,
             title: (v.title || "").trim(),
             url: v.bvidUrl || ("https://www.bilibili.com/video/" + bvid + "/"),
-            folder: folderMap[fid] || "默认",
+            folder: (fid ? (folderMap[fid] || "未分类") : "未分类"),
+            cover: cover,
+            ownerName: ownerName,
+            ownerMid: ownerMid,
+            description: description,
+            pageCount: pageCount,
         });
     }
     return videos;
@@ -444,10 +546,12 @@ function checkModelCapabilities() {
         vuLabel.classList.remove("disabled-hint");
         return;
     }
-    var isVision = name.indexOf("vision") !== -1 || name.indexOf("4o") !== -1 ||
-        name.indexOf("gpt-4") !== -1 || name.indexOf("claude-3") !== -1 ||
-        name.indexOf("gemini") !== -1 || name.indexOf("qwen-vl") !== -1 ||
-        name.indexOf("glm-4v") !== -1;
+    var isVision = name.indexOf("vision") !== -1 || name.indexOf("vl") !== -1 ||
+        name.indexOf("4o") !== -1 || name.indexOf("4.1") !== -1 ||
+        name.indexOf("gpt-4") !== -1 || name.indexOf("gpt-5") !== -1 ||
+        name.indexOf("claude") !== -1 || name.indexOf("gemini") !== -1 ||
+        name.indexOf("glm-4v") !== -1 || name.indexOf("qwen") !== -1 ||
+        name.indexOf("pixtral") !== -1 || name.indexOf("llava") !== -1;
 
     if (isVision) {
         fmtScreenshot.disabled = false;
@@ -481,17 +585,52 @@ function isAiSubtitle(bvid) {
     return rec && rec.transcript_source === "ai_subtitle";
 }
 
+function getUniqueFolders() {
+    var folders = {};
+    for (var i = 0; i < state.videos.length; i++) {
+        var f = state.videos[i].folder || "未分类";
+        folders[f] = (folders[f] || 0) + 1;
+    }
+    var result = Object.keys(folders).sort();
+    return result.map(function (name) { return { name: name, count: folders[name] }; });
+}
+
+function renderFolderDropdown() {
+    var sel = document.getElementById("folder-filter-select");
+    if (!sel) return;
+    var folders = getUniqueFolders();
+    var currentVal = sel.value || state.folderFilter;
+    sel.innerHTML = '<option value="">📁 全部分组</option>';
+    for (var i = 0; i < folders.length; i++) {
+        var f = folders[i];
+        sel.innerHTML += '<option value="' + escapeHtml(f.name) + '">' + escapeHtml(f.name) + ' (' + f.count + ')</option>';
+    }
+    sel.value = currentVal;
+}
+
 function getFilteredVideos() {
-    var q = state.searchQuery.toLowerCase(), filter = state.statusFilter;
+    var q = state.searchQuery.toLowerCase(), filter = state.statusFilter, folder = state.folderFilter;
     return state.videos.filter(function (v) {
         var st = getVideoStatus(v.bvid);
+        if (folder && (v.folder || "未分类") !== folder) return false;
         if (filter === "pending" && st !== "pending") return false;
         if (filter === "done" && st !== "done") return false;
         if (filter === "failed" && st !== "failed") return false;
         if (filter === "ai_subtitle" && !isAiSubtitle(v.bvid)) return false;
-        if (q) return (v.bvid || "").toLowerCase().indexOf(q) !== -1 || (v.title || "").toLowerCase().indexOf(q) !== -1;
+        if (filter === "multi_p" && (v.pageCount || 1) <= 1) return false;
+        if (q) return (v.bvid || "").toLowerCase().indexOf(q) !== -1 || (v.title || "").toLowerCase().indexOf(q) !== -1 || (v.ownerName || "").toLowerCase().indexOf(q) !== -1 || (v.ownerMid || "").indexOf(q) !== -1;
         return true;
     });
+}
+
+function getPagedVideos() {
+    var filtered = getFilteredVideos();
+    var start = (state.currentPage - 1) * state.pageSize;
+    return {
+        items: filtered.slice(start, start + state.pageSize),
+        total: filtered.length,
+        totalPages: Math.ceil(filtered.length / state.pageSize) || 1,
+    };
 }
 
 function getSelectedBvids() {
@@ -512,10 +651,10 @@ function onSelectAll() {
     updateSelectedCount();
 }
 
-function onSearchFilter() { state.searchQuery = searchInput.value; selectAllCb.checked = false; renderVideoList(); }
+function onSearchFilter() { state.searchQuery = searchInput.value; state.currentPage = 1; selectAllCb.checked = false; renderVideoList(); }
 
 function renderVideoList() {
-    var filtered = getFilteredVideos();
+    var paged = getPagedVideos();
 
     if (!state.videos || state.videos.length === 0) {
         videoToolbar.style.display = "none";
@@ -526,7 +665,7 @@ function renderVideoList() {
 
     videoToolbar.style.display = "flex";
 
-    if (filtered.length === 0) {
+    if (paged.total === 0) {
         videoList.innerHTML = '<div class="empty-state">无匹配视频</div>';
         videoCount.textContent = "共 " + state.videos.length + " 个视频（筛选后 0 个）";
         updateSelectedCount();
@@ -534,10 +673,49 @@ function renderVideoList() {
     }
 
     if (state.viewMode === "card") {
-        renderCardView(filtered);
+        renderCardView(paged.items);
     } else {
-        renderTableView(filtered);
+        renderTableView(paged.items);
     }
+
+    // 分页控件
+    var pagHtml = '';
+    if (paged.totalPages > 1) {
+        pagHtml = '<div class="pagination-bar">';
+        pagHtml += '<span class="pag-info">共 ' + paged.total + ' 个，第 ' + state.currentPage + '/' + paged.totalPages + ' 页</span>';
+        pagHtml += '<button class="btn btn-sm pag-btn" data-page="1" ' + (state.currentPage === 1 ? 'disabled' : '') + '>首页</button>';
+        pagHtml += '<button class="btn btn-sm pag-btn" data-page="' + (state.currentPage - 1) + '" ' + (state.currentPage === 1 ? 'disabled' : '') + '>上一页</button>';
+        for (var p = 1; p <= paged.totalPages; p++) {
+            if (p === state.currentPage) {
+                pagHtml += '<span class="pag-current">' + p + '</span>';
+            } else if (Math.abs(p - state.currentPage) <= 2 || p === 1 || p === paged.totalPages) {
+                pagHtml += '<button class="btn btn-sm pag-btn" data-page="' + p + '">' + p + '</button>';
+            } else if (Math.abs(p - state.currentPage) === 3) {
+                pagHtml += '<span class="pag-ellipsis">...</span>';
+            }
+        }
+        pagHtml += '<button class="btn btn-sm pag-btn" data-page="' + (state.currentPage + 1) + '" ' + (state.currentPage === paged.totalPages ? 'disabled' : '') + '>下一页</button>';
+        pagHtml += '<button class="btn btn-sm pag-btn" data-page="' + paged.totalPages + '" ' + (state.currentPage === paged.totalPages ? 'disabled' : '') + '>末页</button>';
+        pagHtml += '</div>';
+    }
+    videoList.innerHTML = '<div id="video-list-inner"></div>' + pagHtml;
+
+    var inner = document.getElementById("video-list-inner");
+    if (state.viewMode === "card") {
+        renderCardViewTo(inner, paged.items);
+    } else {
+        renderTableViewTo(inner, paged.items);
+    }
+
+    // 绑定分页按钮事件
+    videoList.querySelectorAll(".pag-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            state.currentPage = parseInt(btn.getAttribute("data-page"));
+            selectAllCb.checked = false;
+            renderVideoList();
+            videoList.scrollIntoView({ behavior: "smooth" });
+        });
+    });
 
     selectAllCb.checked = false; updateSelectedCount();
 
@@ -548,9 +726,10 @@ function renderVideoList() {
         if (st === "failed") failedCount++;
     });
     videoCount.textContent = "共 " + state.videos.length + " 个（✓ " + doneCount + " / ✗ " + failedCount + " / 待 " + (state.videos.length - doneCount - failedCount) + "）";
+    renderFolderDropdown();
 }
 
-function renderTableView(filtered) {
+function renderTableViewTo(container, filtered) {
     var groups = {};
     for (var i = 0; i < filtered.length; i++) {
         var v = filtered[i], folder = v.folder || "未分类";
@@ -564,45 +743,104 @@ function renderTableView(filtered) {
         html += '<div class="folder-group"><h3 class="folder-title">' + escapeHtml(folder) + " (" + items.length + ")</h3>";
         html += '<table class="video-table"><thead><tr>';
         html += '<th class="cb-col"><input type="checkbox" class="folder-cb"></th>';
-        html += '<th class="bv-col">BV号</th><th>标题</th><th class="status-col">状态</th><th class="action-col">操作</th>';
+        html += '<th class="bv-col">BV号</th><th>标题</th><th class="owner-col">UP主</th><th class="status-col">状态</th><th class="action-col">操作</th>';
         html += "</tr></thead><tbody>";
         for (var vi = 0; vi < items.length; vi++) {
             var v = items[vi], st = getVideoStatus(v.bvid);
-            html += "<tr class='row-" + st + "'>";
+            var isMultiP = (v.pageCount || 1) > 1;
+            html += "<tr class='row-" + st + (isMultiP ? " row-multip" : "") + "'>";
             html += '<td class="cb-col"><input type="checkbox" class="video-cb" value="' + v.bvid + '"></td>';
-            html += '<td class="bvid">' + escapeHtml(v.bvid) + "</td>";
+            html += '<td class="bvid">' + renderMultiPBadge(v) + escapeHtml(v.bvid) + "</td>";
             html += '<td><a href="' + v.url + '" target="_blank" rel="noopener" class="video-link" title="在 B 站打开">' + escapeHtml(v.title) + "</a></td>";
+            html += '<td class="owner-cell">' + renderOwnerLink(v) + "</td>";
             html += '<td><span class="status-badge status-' + st + '">' + statusLabel(st) + "</span>" + (isAiSubtitle(v.bvid) ? ' <span class="ai-badge">⚠️ AI匹配</span>' : "") + "</td>";
             html += '<td class="action-col">' + renderActionButtons(v, st) + "</td>";
             html += "</tr>";
         }
         html += "</tbody></table></div>";
     }
-    videoList.innerHTML = html;
+    container.innerHTML = html;
     bindTableEvents();
 }
 
-function renderCardView(filtered) {
+function renderCardViewTo(container, filtered) {
     var html = '<div class="card-grid">';
     for (var i = 0; i < filtered.length; i++) {
         var v = filtered[i], st = getVideoStatus(v.bvid);
-        html += '<div class="video-card status-card-' + st + '">';
-        html += '<div class="card-header">';
-        html += '<input type="checkbox" class="video-cb" value="' + v.bvid + '">';
-        html += '<span class="status-badge status-' + st + '">' + statusLabel(st) + "</span>" + (isAiSubtitle(v.bvid) ? ' <span class="ai-badge">⚠️ AI匹配</span>' : "");
-        html += "</div>";
+        var isMultiP = (v.pageCount || 1) > 1;
+        var aiSub = isAiSubtitle(v.bvid);
+        var badgeLabel = statusLabel(st);
+        var badgeClass = st === "done" ? "status-done" : st === "failed" ? "status-failed" : "status-pending";
+        html += '<div class="video-card status-card-' + st + (isMultiP ? " card-multip" : "") + '">';
+        // 封面 + 叠加层
+        if (v.cover) {
+            html += '<div class="card-cover-wrap">';
+            html += '<img class="card-cover" src="' + escapeHtml(v.cover) + '" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display=\'none\'">';
+            html += '<div class="card-cover-overlay">';
+            html += '<input type="checkbox" class="video-cb" value="' + v.bvid + '">';
+            html += '<span class="card-cover-status ' + badgeClass + '">' + badgeLabel + '</span>';
+            html += '</div></div>';
+        } else {
+            html += '<div class="card-header">';
+            html += '<input type="checkbox" class="video-cb" value="' + v.bvid + '">';
+            html += '<span class="status-badge ' + badgeClass + '">' + badgeLabel + '</span>';
+            html += '</div>';
+        }
+        // 标题
         html += '<a href="' + v.url + '" target="_blank" rel="noopener" class="card-title video-link" title="在 B 站打开">' + escapeHtml(v.title) + "</a>";
-        html += '<div class="card-meta">';
-        html += '<span class="bvid">' + escapeHtml(v.bvid) + "</span>";
-        html += '<span class="card-folder">' + escapeHtml(v.folder || "未分类") + "</span>";
+        // 标签行: UP主 · BV号 · P标签 · AI字幕 · 文件夹
+        html += '<div class="card-tags">';
+        if (v.ownerName) {
+            if (v.ownerMid) {
+                html += '<a href="https://space.bilibili.com/' + v.ownerMid + '" target="_blank" rel="noopener" class="card-tag card-tag-owner" title="B站空间">' + escapeHtml(v.ownerName) + '</a>';
+            } else {
+                html += '<span class="card-tag card-tag-owner">' + escapeHtml(v.ownerName) + '</span>';
+            }
+        }
+        html += '<span class="card-tag card-tag-bvid">' + escapeHtml(v.bvid) + '</span>';
+        if (isMultiP) html += '<span class="card-tag card-tag-multip">' + v.pageCount + 'P</span>';
+        if (aiSub) html += '<span class="card-tag card-tag-ai">⚠️ AI字幕</span>';
+        html += '<span class="card-tag card-tag-folder" data-folder="' + escapeHtml(v.folder || "未分类") + '" title="点击筛选此分组">' + escapeHtml(v.folder || "未分类") + '</span>';
+        if (v.description) {
+            html += '<span class="card-tag card-tag-desc" data-desc="' + escapeHtml(v.description) + '" title="点击查看简介">📝 简介</span>';
+        }
         html += "</div>";
+        // 操作
+        html += '<div class="card-footer">';
         html += '<div class="card-actions">' + renderActionButtons(v, st) + "</div>";
+        html += "</div>";
         html += "</div>";
     }
     html += "</div>";
-    videoList.innerHTML = html;
+    container.innerHTML = html;
     bindCardEvents();
 }
+
+function renderOwnerLink(v) {
+    if (!v.ownerName) return "";
+    var name = escapeHtml(v.ownerName);
+    if (v.ownerMid) {
+        return '<a href="https://space.bilibili.com/' + v.ownerMid + '" target="_blank" rel="noopener" class="owner-link" title="B站空间">' + name + '</a>';
+    }
+    return '<span class="owner-name">' + name + '</span>';
+}
+
+function renderMultiPBadge(v) {
+    var pc = v.pageCount || 1;
+    if (pc <= 1) return "";
+    return '<span class="multip-badge" title="' + pc + 'P视频">' + pc + 'P</span> ';
+}
+
+function isMultiPVideo(bvid) {
+    for (var i = 0; i < state.videos.length; i++) {
+        if (state.videos[i].bvid === bvid) return (state.videos[i].pageCount || 1) > 1;
+    }
+    return false;
+}
+
+// 保留旧函数签名兼容（渲染到 #video-list 直接用）
+function renderTableView(filtered) { renderTableViewTo(videoList, filtered); }
+function renderCardView(filtered) { renderCardViewTo(videoList, filtered); }
 
 function statusLabel(st) {
     if (st === "done") return "✓ 已处理";
@@ -613,14 +851,22 @@ function statusLabel(st) {
 function renderActionButtons(v, st) {
     var html = "";
     if (st === "done") {
-        html += '<button class="btn btn-xs btn-open-file" data-bvid="' + v.bvid + '" title="打开本地笔记文件">📂 打开文件</button>';
-        html += '<button class="btn btn-xs btn-bilinote" data-bvid="' + v.bvid + '" data-task="' + (state.processedRecords[v.bvid] ? state.processedRecords[v.bvid].task_id : "") + '" title="在 BiliNote 中查看笔记">🔗 BiliNote</button>';
+        html += '<button class="btn btn-xs btn-open-file" data-bvid="' + v.bvid + '" title="打开本地笔记文件">📂 打开笔记</button>';
+        html += '<button class="btn btn-xs btn-open-folder" data-bvid="' + v.bvid + '" title="打开笔记所在文件夹">📁 文件夹</button>';
         html += '<button class="btn btn-xs btn-reprocess" data-bvid="' + v.bvid + '" title="重新处理">🔄</button>';
         if (isAiSubtitle(v.bvid)) {
             html += '<button class="btn btn-xs btn-force-retranscribe" data-bvid="' + v.bvid + '" title="原视频无字幕，BiliNotes用了AI匹配字幕。点击删除缓存，强制用本地模型重新转写">🔧 强制重转</button>';
         }
     } else if (st === "failed") {
         html += '<button class="btn btn-xs btn-reprocess" data-bvid="' + v.bvid + '" title="重新处理">🔄 重试</button>';
+    } else if ((v.pageCount || 1) > 1) {
+        // 多P视频未处理：显示P数选择器
+        var curP = state.videoPageSelections[v.bvid] || 1;
+        html += '<span class="p-selector">P<select class="p-sel" data-bvid="' + v.bvid + '">';
+        for (var pn = 1; pn <= v.pageCount; pn++) {
+            html += '<option value="' + pn + '"' + (pn === curP ? ' selected' : '') + '>' + pn + '</option>';
+        }
+        html += '</select></span>';
     }
     return html;
 }
@@ -638,22 +884,71 @@ function bindTableEvents() {
 
 function bindCardEvents() {
     videoList.querySelectorAll(".video-cb").forEach(function (cb) { cb.addEventListener("change", updateSelectedCount); });
+    videoList.querySelectorAll(".card-tag-folder").forEach(function (tag) {
+        tag.addEventListener("click", function () {
+            state.folderFilter = this.getAttribute("data-folder");
+            state.currentPage = 1;
+            selectAllCb.checked = false;
+            renderVideoList();
+            document.querySelector(".video-section").scrollIntoView({ behavior: "smooth" });
+        });
+    });
+    videoList.querySelectorAll(".card-tag-desc").forEach(function (tag) {
+        tag.addEventListener("click", function (e) {
+            e.stopPropagation();
+            showDescPopup(this.getAttribute("data-desc"), this);
+        });
+    });
     bindActionButtons();
 }
 
+var _descPopupCloseHandler = null;
+function showDescPopup(text, anchor) {
+    // 清理旧弹窗和事件
+    var existing = document.getElementById("desc-popup");
+    if (existing) existing.remove();
+    if (_descPopupCloseHandler) {
+        document.removeEventListener("click", _descPopupCloseHandler);
+        _descPopupCloseHandler = null;
+    }
+
+    var popup = document.createElement("div");
+    popup.id = "desc-popup";
+    popup.textContent = text;
+    popup.style.cssText = "position:fixed;max-width:380px;padding:14px 18px;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:10px;font-size:0.84rem;line-height:1.7;z-index:9999;box-shadow:0 6px 24px rgba(0,0,0,0.45);white-space:pre-wrap;word-break:break-word;";
+    document.body.appendChild(popup);
+
+    // 居中定位在锚点下方
+    var rect = anchor.getBoundingClientRect();
+    var pw = popup.offsetWidth;
+    var left = rect.left + rect.width / 2 - pw / 2;
+    var top = rect.bottom + 8;
+    if (left < 8) left = 8;
+    if (left + pw > window.innerWidth - 8) left = window.innerWidth - pw - 8;
+    if (top + popup.offsetHeight > window.innerHeight) top = rect.top - popup.offsetHeight - 8;
+
+    popup.style.left = Math.max(8, left) + "px";
+    popup.style.top = Math.max(8, top) + "px";
+    popup.style.animation = "fadeIn 0.15s ease";
+
+    _descPopupCloseHandler = function (e) {
+        if (!popup.contains(e.target) && e.target !== anchor) {
+            popup.remove();
+            document.removeEventListener("click", _descPopupCloseHandler);
+            _descPopupCloseHandler = null;
+        }
+    };
+    setTimeout(function () {
+        document.addEventListener("click", _descPopupCloseHandler);
+    }, 10);
+}
+
 function bindActionButtons() {
-    videoList.querySelectorAll(".btn-bilinote").forEach(function (btn) {
-        btn.addEventListener("click", function () {
-            var taskId = btn.getAttribute("data-task");
-            if (taskId) {
-                openBilinoteTask(taskId);
-            } else {
-                window.open(state.bilinoteUrl, "_blank");
-            }
-        });
-    });
     videoList.querySelectorAll(".btn-open-file").forEach(function (btn) {
         btn.addEventListener("click", function () { openLocalFile(btn.getAttribute("data-bvid")); });
+    });
+    videoList.querySelectorAll(".btn-open-folder").forEach(function (btn) {
+        btn.addEventListener("click", function () { openLocalFolder(btn.getAttribute("data-bvid")); });
     });
     videoList.querySelectorAll(".btn-reprocess").forEach(function (btn) {
         btn.addEventListener("click", function () { reprocessVideo(btn.getAttribute("data-bvid")); });
@@ -661,6 +956,26 @@ function bindActionButtons() {
     videoList.querySelectorAll(".btn-force-retranscribe").forEach(function (btn) {
         btn.addEventListener("click", function () { forceRetranscribe(btn.getAttribute("data-bvid")); });
     });
+    videoList.querySelectorAll(".p-sel").forEach(function (sel) {
+        sel.addEventListener("change", function () {
+            state.videoPageSelections[sel.getAttribute("data-bvid")] = parseInt(sel.value);
+        });
+        // 初始化默认值
+        if (!state.videoPageSelections[sel.getAttribute("data-bvid")]) {
+            state.videoPageSelections[sel.getAttribute("data-bvid")] = 1;
+        }
+    });
+}
+
+async function openLocalFolder(bvid) {
+    try {
+        var res = await fetch("/api/get-output-files/" + bvid);
+        var data = await res.json();
+        if (!data.dir) { showBanner("未找到文件夹路径", "warning"); return; }
+        var openRes = await fetch("/api/open-file?path=" + encodeURIComponent(data.dir));
+        var openData = await openRes.json();
+        if (!openRes.ok) { showBanner("打开文件夹失败：" + (openData.error || "未知错误"), "error"); }
+    } catch (err) { showBanner("打开文件夹失败：" + err.message, "error"); }
 }
 
 async function openLocalFile(bvid) {
@@ -772,6 +1087,11 @@ async function loadCheckpoint() {
                     title: rec.title || "",
                     folder: rec.folder || "未分类",
                     url: "https://www.bilibili.com/video/" + bvid + "/",
+                    cover: rec.cover || "",
+                    ownerName: rec.ownerName || "",
+                    ownerMid: rec.ownerMid || "",
+                    pageCount: rec.pageCount || 1,
+                    description: rec.description || "",
                 });
             }
             if (checkpointVideos.length > 0) {
@@ -830,9 +1150,11 @@ function normalizeVideoUrl(url, bvid) {
     return "https://www.bilibili.com/video/" + bvid + "/";
 }
 
-async function submitVideo(video) {
+async function submitVideo(video, pNum) {
+    pNum = pNum || 1;
     var fmt = getFormat();
-    var videoUrl = normalizeVideoUrl(video.url, video.bvid);
+    var baseUrl = normalizeVideoUrl(video.url, video.bvid);
+    var videoUrl = pNum > 1 ? baseUrl + "?p=" + pNum : baseUrl;
     var body = {
         bvid: video.bvid, title: video.title, folder: video.folder || "未分类", url: videoUrl,
         model_name: modelSelect.value, provider_id: providerSelect.value,
@@ -848,6 +1170,12 @@ async function submitVideo(video) {
         grid_size: [parseInt(gridRows.value) || 2, parseInt(gridCols.value) || 2],
         save_options: getSaveOptions(),
         output_dir: outputDirInput.value.trim() || "./output",
+        p: pNum,
+        cover: video.cover || "",
+        ownerName: video.ownerName || "",
+        ownerMid: video.ownerMid || "",
+        pageCount: video.pageCount || 1,
+        description: video.description || "",
     };
 
     var res = await fetch("/api/process-video", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -914,7 +1242,8 @@ async function startBatch(selectedOnly) {
 
         addLog("[" + (i + 1) + "/" + batch.length + "] " + video.title + " (" + video.bvid + ")", "info");
         try {
-            var taskId = await submitVideo(video);
+            var pNum = state.videoPageSelections[video.bvid] || 1;
+            var taskId = await submitVideo(video, pNum);
             addLog("  → 已提交 BiliNote, task_id: " + taskId.substring(0, 8) + "...", "info");
             var result = await pollTaskStatus(taskId, 900000);
             if (result.status === "SUCCESS") {
@@ -1039,6 +1368,107 @@ function openSyncModal() {
 
 function closeSyncModal() {
     $("sync-modal").classList.add("hidden");
+}
+
+async function openHelpModal() {
+    $("help-modal").classList.remove("hidden");
+    var content = $("help-content");
+    if (content.getAttribute("data-loaded")) return;
+    try {
+        var res = await fetch("/api/readme");
+        var md = await res.text();
+        content.innerHTML = renderMarkdown(md);
+        content.setAttribute("data-loaded", "1");
+    } catch (e) {
+        content.innerHTML = "<p>加载帮助文档失败</p>";
+    }
+}
+
+function closeHelpModal() {
+    $("help-modal").classList.add("hidden");
+}
+
+function renderMarkdown(md) {
+    var lines = md.split('\n');
+    var html = '';
+    var inCodeBlock = false;
+    var inTable = false;
+    var tableRows = [];
+    var tocItems = [];  // 收集标题用于目录
+
+    function makeId(text) {
+        return text.toLowerCase().replace(/[^\w一-鿿]+/g, '-').replace(/^-|-$/g, '');
+    }
+
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        // 代码块
+        if (line.startsWith('```')) {
+            if (inCodeBlock) { html += '</code></pre>'; inCodeBlock = false; }
+            else { html += '<pre><code>'; inCodeBlock = true; }
+            continue;
+        }
+        if (inCodeBlock) { html += escapeHtml(line) + '\n'; continue; }
+        // 表格
+        if (line.indexOf('|') >= 0 && line.trim().startsWith('|')) {
+            var cells = line.split('|').filter(function(c) { return c.trim(); });
+            var isSep = cells.every(function(c) { return /^[-:]+$/.test(c.trim()); });
+            if (!inTable) { inTable = true; tableRows = []; }
+            if (isSep) continue;
+            var tag = tableRows.length === 0 ? 'th' : 'td';
+            tableRows.push('<tr>' + cells.map(function(c) { return '<' + tag + '>' + c.trim() + '</' + tag + '>'; }).join('') + '</tr>');
+            if (i + 1 >= lines.length || lines[i + 1].indexOf('|') < 0) {
+                html += '<table>' + tableRows.join('') + '</table>';
+                inTable = false; tableRows = [];
+            }
+            continue;
+        }
+        // 标题（带锚点ID）
+        if (line.startsWith('### ')) {
+            var t3 = line.slice(4); var id3 = makeId(t3);
+            tocItems.push({ level: 3, text: t3, id: id3 });
+            html += '<h4 id="' + id3 + '"><a href="#' + id3 + '" class="md-anchor">#</a> ' + t3 + '</h4>'; continue;
+        }
+        if (line.startsWith('## ')) {
+            var t2 = line.slice(3); var id2 = makeId(t2);
+            tocItems.push({ level: 2, text: t2, id: id2 });
+            html += '<h3 id="' + id2 + '"><a href="#' + id2 + '" class="md-anchor">#</a> ' + t2 + '</h3>'; continue;
+        }
+        if (line.startsWith('# ')) {
+            var t1 = line.slice(2); var id1 = makeId(t1);
+            tocItems.push({ level: 1, text: t1, id: id1 });
+            html += '<h2 id="' + id1 + '"><a href="#' + id1 + '" class="md-anchor">#</a> ' + t1 + '</h2>'; continue;
+        }
+        // 空行
+        if (!line.trim()) { html += '<br>'; continue; }
+        // 列表
+        if (/^[-*] /.test(line)) {
+            html += '<li>' + inlineMarkdown(line.replace(/^[-*] /, '')) + '</li>';
+            continue;
+        }
+        // 普通段落
+        html += '<p>' + inlineMarkdown(line) + '</p>';
+    }
+    // 包裹未闭合的列表
+    html = html.replace(/((?:<li>.*?<\/li>)+)/g, '<ul>$1</ul>');
+
+    // 生成目录
+    var tocHtml = '';
+    if (tocItems.length > 0) {
+        tocHtml = '<div class="md-toc"><h3>📑 目录</h3><ul>';
+        for (var ti = 0; ti < tocItems.length; ti++) {
+            var item = tocItems[ti];
+            tocHtml += '<li class="toc-lv' + item.level + '"><a href="#' + item.id + '">' + item.text + '</a></li>';
+        }
+        tocHtml += '</ul></div>';
+    }
+    return tocHtml + html;
+}
+function inlineMarkdown(text) {
+    return text
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
 }
 
 async function copySyncScript() {

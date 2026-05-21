@@ -1,6 +1,4 @@
 """BiliNote 批量收藏转写工具 — Flask GUI 后端"""
-import csv
-import io
 import json
 import os
 import re
@@ -31,6 +29,14 @@ app = Flask(__name__)
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/api/readme")
+def get_readme():
+    readme_path = Path(__file__).parent / "README.md"
+    if readme_path.exists():
+        return readme_path.read_text(encoding="utf-8")
+    return "# 暂无帮助文档"
 
 
 @app.route("/api/parse-file", methods=["POST"])
@@ -159,6 +165,7 @@ def process_video():
     url = data.get("url", f"https://www.bilibili.com/video/{bvid}")
     output_dir = Path(data.get("output_dir", str(OUTPUT_DIR)))
     save_opts = data.get("save_options", ["markdown", "transcript", "json"])
+    p_num = data.get("p", 1) or 1
 
     params = {
         "video_url": url,
@@ -188,6 +195,12 @@ def process_video():
         _task_map[task_id] = {
             "bvid": bvid, "title": title, "folder": folder,
             "output_dir": str(output_dir), "save_opts": save_opts,
+            "p": p_num,
+            "cover": data.get("cover", ""),
+            "ownerName": data.get("ownerName", ""),
+            "ownerMid": data.get("ownerMid", ""),
+            "pageCount": data.get("pageCount", 1),
+            "description": data.get("description", ""),
         }
         return jsonify({"task_id": task_id})
     except requests.RequestException as e:
@@ -219,6 +232,7 @@ def task_status(task_id):
             transcript_lang = transcript_info.get("language", "")
         inner["transcript_source"] = "ai_subtitle" if transcript_lang.startswith("ai-") else "local"
         try:
+            p_num = ctx.get("p", 1)
             files = save_video_output(
                 ctx.get("folder", "未分类"),
                 ctx.get("bvid", ""),
@@ -226,6 +240,7 @@ def task_status(task_id):
                 result,
                 Path(ctx.get("output_dir", str(OUTPUT_DIR))),
                 ctx.get("save_opts", ["markdown", "transcript", "json"]),
+                p_num=p_num,
             )
             inner["files"] = files
             update_checkpoint(
@@ -234,6 +249,12 @@ def task_status(task_id):
                 folder=ctx.get("folder", "未分类"),
                 title=ctx.get("title", ""),
                 transcript_source=inner["transcript_source"],
+                p_num=p_num,
+                cover=ctx.get("cover", ""),
+                ownerName=ctx.get("ownerName", ""),
+                ownerMid=ctx.get("ownerMid", ""),
+                pageCount=ctx.get("pageCount", 1),
+                description=ctx.get("description", ""),
             )
         except Exception as e:
             app.logger.error("保存文件失败: %s", e)
@@ -421,6 +442,10 @@ _COLUMN_MAP = {
     "title": ["title", "标题", "视频标题", "name"],
     "folder": ["folder", "folders", "收藏夹", "folder_title", "folder_name"],
     "url": ["url", "链接", "video_url", "page_url", "bvidUrl"],
+    "cover": ["coverUrl", "cover", "cover_url", "pic", "封面", "thumbnail", "image", "图片"],
+    "owner_name": ["uploader", "owner_name", "ownerName", "author", "UP主", "up主", "up_name", "uploader_name"],
+    "owner_mid": ["owner_mid", "ownerMid", "mid", "UID", "uid", "author_id", "up_id", "uploader_mid", "uploader_id"],
+    "page": ["page", "pages", "分P", "page_count", "pageCount", "视频数"],
 }
 
 
@@ -433,14 +458,12 @@ def _find_col(row_keys, aliases):
 
 
 def _clean_folder_name(name):
-    """去掉 '0-竞赛！' 类的数字前缀"""
-    if name and name[0].isdigit():
-        return name.split("-", 1)[-1] if "-" in name else name
-    return name
+    """保留原始文件夹名（含数字前缀，如 0-竞赛！）"""
+    return name or "未分类"
 
 
 def parse_bilishelf_json(content):
-    """解析 Bilishelf JSON — videos 在顶层，通过 folderId 关联收藏夹"""
+    """解析 Bilishelf JSON — videos 在顶层，通过 folderId 或 folderItems 关联收藏夹"""
     data = json.loads(content)
 
     # 构建 folderId → 文件夹名 映射
@@ -449,18 +472,41 @@ def parse_bilishelf_json(content):
         name = _clean_folder_name(f.get("name", ""))
         folder_map[f["id"]] = name or "默认"
 
+    # 构建 videoId → folderId 映射（兼容 folderItems 格式）
+    vid_to_fid = {}
+    for fi in data.get("folderItems", []):
+        vid_to_fid[fi["videoId"]] = fi["folderId"]
+
     # videos 在顶层
     videos = []
     for v in data.get("videos", []):
         bvid = (v.get("bvid") or "").strip()
         if not bvid:
             continue
-        fid = v.get("folderId", v.get("folder_id", 1))
+        fid = vid_to_fid.get(v.get("id")) or v.get("folderId") or v.get("folder_id") or 0
+        cover = v.get("coverUrl") or v.get("cover") or v.get("pic") or ""
+        if isinstance(cover, str):
+            cover = cover.strip()
+        owner_name = (v.get("uploader") or "").strip()
+        owner_mid = ""
+        space_url = v.get("uploaderSpaceUrl", "")
+        m = re.search(r"space\.bilibili\.com/(\d+)", space_url)
+        if m:
+            owner_mid = m.group(1)
+        page_count = int(v.get("page", 1) or 1)
+        description = (v.get("description") or "").strip()
+        if not description:
+            description = ""
         videos.append({
             "bvid": bvid,
             "title": (v.get("title") or "").strip(),
             "url": v.get("bvidUrl", f"https://www.bilibili.com/video/{bvid}/"),
-            "folder": folder_map.get(fid, "默认"),
+            "folder": folder_map.get(fid, "未分类") if fid else "未分类",
+            "cover": cover,
+            "ownerName": owner_name,
+            "ownerMid": owner_mid,
+            "pageCount": page_count,
+            "description": description,
         })
     return videos
 
@@ -473,22 +519,40 @@ def parse_bilishelf_csv(content):
     col_title = _find_col(header_fields, _COLUMN_MAP["title"])
     col_folder = _find_col(header_fields, _COLUMN_MAP["folder"])
     col_url = _find_col(header_fields, _COLUMN_MAP["url"])
+    col_cover = _find_col(header_fields, _COLUMN_MAP["cover"])
+    col_owner_name = _find_col(header_fields, _COLUMN_MAP["owner_name"])
+    col_owner_mid = _find_col(header_fields, _COLUMN_MAP["owner_mid"])
+    col_uploader_space_url = _find_col(header_fields, ["uploaderSpaceUrl", "uploader_space_url", "space_url"])
+    col_page = _find_col(header_fields, _COLUMN_MAP["page"])
+    col_description = _find_col(header_fields, ["description", "desc", "简介", "intro", "summary"])
     if col_bvid is None:
         raise ValueError("CSV 中未找到 BV 号列（尝试匹配: bvid, BV号, BV 等）")
     bvid_idx = header_fields.index(col_bvid)
     title_idx = header_fields.index(col_title) if col_title else -1
     url_idx = header_fields.index(col_url) if col_url else -1
     folder_idx = header_fields.index(col_folder) if col_folder else -1
+    cover_idx = header_fields.index(col_cover) if col_cover else -1
+    owner_name_idx = header_fields.index(col_owner_name) if col_owner_name else -1
+    owner_mid_idx = header_fields.index(col_owner_mid) if col_owner_mid else -1
+    uploader_space_url_idx = header_fields.index(col_uploader_space_url) if col_uploader_space_url else -1
+    page_idx = header_fields.index(col_page) if col_page else -1
+    description_idx = header_fields.index(col_description) if col_description else -1
     bvid_pattern = re.compile(r'^BV[0-9A-Za-z]{6,}$')
-    bv_positions = [m.start() for m in re.finditer(r'BV[0-9A-Za-z]{10},', content)]
+    lines = content.split('\n')
     videos = []
-    for i, pos in enumerate(bv_positions):
-        end = bv_positions[i + 1] if i + 1 < len(bv_positions) else len(content)
-        rec = content[pos:end].rstrip().rstrip(',')
-        rec_oneline = rec.replace('\n', ' ').replace('\r', ' ')
-        while '  ' in rec_oneline:
-            rec_oneline = rec_oneline.replace('  ', ' ')
-        row = _split_csv_row(rec_oneline)
+    row_buffer = []
+    in_quotes = False
+    for line in lines[1:]:  # 跳过 header
+        line = line.rstrip('\r')
+        if not in_quotes:
+            row_buffer = []
+        row_buffer.append(line)
+        quote_count = line.count('"')
+        in_quotes = (in_quotes + (quote_count % 2)) % 2 == 1
+        if in_quotes:
+            continue
+        combined = ' '.join(row_buffer)
+        row = _split_csv_row(combined)
         bvid_val = (row[bvid_idx] if bvid_idx < len(row) else "").strip()
         if not bvid_val or not bvid_pattern.match(bvid_val):
             continue
@@ -496,7 +560,17 @@ def parse_bilishelf_csv(content):
         folder_val = (row[folder_idx].strip() if folder_idx >= 0 and folder_idx < len(row) else "")
         folder_val = _clean_folder_name(folder_val) or "未分类"
         url_val = (row[url_idx].strip() if url_idx >= 0 and url_idx < len(row) else "") or f"https://www.bilibili.com/video/{bvid_val}/"
-        videos.append({"bvid": bvid_val, "title": title_val, "folder": folder_val, "url": url_val})
+        cover_val = (row[cover_idx].strip() if cover_idx >= 0 and cover_idx < len(row) else "")
+        owner_name_val = (row[owner_name_idx].strip() if owner_name_idx >= 0 and owner_name_idx < len(row) else "")
+        owner_mid_val = (row[owner_mid_idx].strip() if owner_mid_idx >= 0 and owner_mid_idx < len(row) else "")
+        if not owner_mid_val and uploader_space_url_idx >= 0 and uploader_space_url_idx < len(row):
+            space_url = row[uploader_space_url_idx].strip()
+            m = re.search(r"space\.bilibili\.com/(\d+)", space_url)
+            if m:
+                owner_mid_val = m.group(1)
+        page_val = int(row[page_idx].strip()) if page_idx >= 0 and page_idx < len(row) and row[page_idx].strip().isdigit() else 1
+        description_val = (row[description_idx].strip() if description_idx >= 0 and description_idx < len(row) else "")
+        videos.append({"bvid": bvid_val, "title": title_val, "folder": folder_val, "url": url_val, "cover": cover_val, "ownerName": owner_name_val, "ownerMid": owner_mid_val, "pageCount": page_val, "description": description_val})
     return videos
 
 
@@ -526,13 +600,14 @@ def sanitize_filename(name, max_len=80):
     return result or "untitled"
 
 
-def save_video_output(folder_name, bvid, title, result, output_dir, save_opts=None):
+def save_video_output(folder_name, bvid, title, result, output_dir, save_opts=None, p_num=1):
     """保存视频笔记 —— 每个视频独立子目录"""
     if save_opts is None:
         save_opts = ["markdown", "transcript", "json"]
     safe_folder = sanitize_filename(folder_name, max_len=60)
     safe_title = sanitize_filename(title, max_len=80)
-    dir_name = f"{bvid} - {safe_title}"
+    p_suffix = f" - P{p_num}" if int(p_num) > 1 else ""
+    dir_name = f"{bvid} - {safe_title}{p_suffix}"
     dest_dir = output_dir / safe_folder / dir_name
     dest_dir.mkdir(parents=True, exist_ok=True)
 
@@ -575,13 +650,23 @@ def load_checkpoint(output_dir=None):
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        records = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         app.logger.warning("Checkpoint 文件损坏，将从头开始")
         return {}
+    # 兼容旧记录：补全缺失字段
+    need_save = False
+    for bvid, rec in records.items():
+        for key, default in [("p", 1), ("cover", ""), ("ownerName", ""), ("ownerMid", ""), ("pageCount", 1), ("description", "")]:
+            if key not in rec:
+                rec[key] = default
+                need_save = True
+    if need_save:
+        _save_checkpoint_file(records)
+    return records
 
 
-def update_checkpoint(bvid, status, task_id, output_dir=None, folder="", title="", transcript_source=""):
+def update_checkpoint(bvid, status, task_id, output_dir=None, folder="", title="", transcript_source="", p_num=1, cover="", ownerName="", ownerMid="", pageCount=1, description=""):
     actual_output_dir = str(output_dir) if output_dir else str(OUTPUT_DIR)
     records = load_checkpoint()
     records[bvid] = {
@@ -592,6 +677,12 @@ def update_checkpoint(bvid, status, task_id, output_dir=None, folder="", title="
         "title": title,
         "output_dir": actual_output_dir,
         "transcript_source": transcript_source,
+        "p": int(p_num) if p_num else 1,
+        "cover": cover or "",
+        "ownerName": ownerName or "",
+        "ownerMid": str(ownerMid or ""),
+        "pageCount": int(pageCount or 1),
+        "description": description or "",
     }
     _save_checkpoint_file(records)
 
@@ -689,6 +780,9 @@ def bilinotes_sync():
             result = inner.get("result") or {}
         except Exception:
             result = {}
+
+        if not result or not result.get("markdown"):
+            continue
 
         audio_meta = result.get("audio_meta") or {}
         raw_info = audio_meta.get("raw_info") or {}
