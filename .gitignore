@@ -1,0 +1,6 @@
+__pycache__/
+.trae/
+*.csv
+output/
+启动*.vbs
+竞赛+正在学.json
