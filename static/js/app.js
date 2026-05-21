@@ -118,6 +118,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
     initTheme();
     restoreConfig();
+    loadCheckpoint();
     loadTranscriberConfig();
     loadProviders();
     checkModelCapabilities();
@@ -257,9 +258,12 @@ async function loadFile(file) {
         var fileType = file.name.toLowerCase().endsWith(".csv") ? "csv" : "json";
         var videos;
         if (fileType === "csv") {
-            var formData = new FormData();
-            formData.append("file", file);
-            var res = await fetch("/api/parse-file", { method: "POST", body: formData });
+            var csvText = await file.text();
+            var res = await fetch("/api/parse-file", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ content: csvText, filename: file.name, fileType: "csv" }),
+            });
             var data = await res.json();
             if (!res.ok || !data.videos || data.videos.length === 0) {
                 showBanner(data.error || "CSV 解析失败", "error"); return;
@@ -758,6 +762,23 @@ async function loadCheckpoint() {
                 needBackfill = true;
             }
         }
+        // 如果还没有导入文件，从 checkpoint 记录构建视频列表
+        if (!state.videos || state.videos.length === 0) {
+            var checkpointVideos = [];
+            for (var bvid in state.processedRecords) {
+                var rec = state.processedRecords[bvid];
+                checkpointVideos.push({
+                    bvid: bvid,
+                    title: rec.title || "",
+                    folder: rec.folder || "未分类",
+                    url: "https://www.bilibili.com/video/" + bvid + "/",
+                });
+            }
+            if (checkpointVideos.length > 0) {
+                state.videos = checkpointVideos;
+                renderVideoList();
+            }
+        }
         if (needBackfill) {
             backfillTranscriptSource();
         }
@@ -958,78 +979,62 @@ async function copyFiles(fileType) {
 }
 
 async function syncToBilinotesDB() {
+    openSyncModal();
     var btn = $("sync-bilinotes-btn");
+    var statusEl = $("sync-status");
     btn.disabled = true;
     btn.textContent = "⏳ 准备中...";
+    statusEl.textContent = "正在生成注入脚本...";
     try {
         var res = await fetch("/api/bilinotes-sync");
         var data = await res.json();
-        if (!data.tasks || data.tasks.length === 0) {
-            showBanner("没有可同步的任务", "warning");
+        if (!data.script) {
+            statusEl.textContent = "没有可同步的任务";
             btn.disabled = false;
             btn.textContent = "🔄 同步";
             return;
         }
-        var syncApiBase = window.location.origin + "/api/bilinotes-sync";
-        var script = [
-            '(function(){',
-            'var API="' + syncApiBase + '";',
-            'var BATCH=15;',
-            'var dbReq=indexedDB.open("keyval-store");',
-            'dbReq.onupgradeneeded=function(e){e.target.result.createObjectStore("keyval")};',
-            'dbReq.onsuccess=function(e){',
-            'var db=e.target.result;',
-            'var gr=db.transaction("keyval","readonly").objectStore("keyval").get("task-storage");',
-            'gr.onsuccess=function(ev){',
-            'var raw=ev.target.result,ex;',
-            'if(typeof raw==="string"){try{ex=JSON.parse(raw)}catch(x){ex=null}}',
-            'else if(raw&&typeof raw==="object"){ex=raw}else{ex=null}',
-            'if(!ex||!ex.state||!Array.isArray(ex.state.tasks)){ex={state:{tasks:[],currentTaskId:null},version:0}}',
-            'var ids=new Set(ex.state.tasks.map(function(t){return t.id}));',
-            'var p=Array.from(ids).join(",");',
-            'var url=API+(p?"?existing_ids="+encodeURIComponent(p):"");',
-            'fetch(url).then(function(r){return r.json()}).then(function(d){',
-            'if(!d.tasks||d.tasks.length===0){alert("Already up to date");return}',
-            'var add=d.tasks.filter(function(t){return!ids.has(t.id)});',
-            'if(add.length===0){alert("Already up to date");return}',
-            'var i=0;',
-            'function wb(){',
-            'var b=add.slice(i,i+BATCH);',
-            'if(b.length===0){alert("Done! "+add.length+" tasks synced. Refresh page.");return}',
-            'b.forEach(function(t){ex.state.tasks.unshift(t)});',
-            'var tx=db.transaction("keyval","readwrite");',
-            'tx.objectStore("keyval").put(JSON.stringify(ex),"task-storage");',
-            'tx.oncomplete=function(){i+=BATCH;console.log(i+"/"+add.length);setTimeout(wb,80)}',
-            '}',
-            'wb()',
-            '}).catch(function(er){alert("Fetch error: "+er)})',
-            '};',
-            '};',
-            'dbReq.onerror=function(){alert("Cannot open IndexedDB")}',
-            '})()'
-        ].join("");
-
-        window.open(state.bilinoteUrl, "_blank");
-        var ta = document.createElement("textarea");
-        ta.value = script;
-        ta.style.position = "fixed";
-        ta.style.left = "-9999px";
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        document.body.removeChild(ta);
-
-        showBanner("✅ 同步脚本已复制！已打开 BiliNotes 页面，请按 F12 → Console → Ctrl+V → Enter", "success");
+        showScriptInModal(data.script);
+        statusEl.textContent = "脚本已生成（" + data.count + " 条），点击下方按钮复制或直接选中文本 Ctrl+C";
     } catch (err) {
-        showBanner("同步请求失败：" + err.message, "error");
+        statusEl.textContent = "❌ 获取任务数据失败：" + err.message;
     }
     btn.disabled = false;
     btn.textContent = "🔄 同步";
 }
 
+function showScriptInModal(script) {
+    var existing = document.getElementById("sync-script-textarea");
+    if (existing) existing.remove();
+    var existingNote = document.getElementById("sync-reminder-note");
+    if (existingNote) existingNote.remove();
+
+    var ta = document.createElement("textarea");
+    ta.id = "sync-script-textarea";
+    ta.value = script;
+    ta.readOnly = true;
+    ta.style.cssText = "width:100%;height:160px;padding:10px;border:1px solid var(--border-color, #333);border-radius:6px;background:rgba(0,0,0,0.2);color:var(--text-main, #fff);font-family:monospace;font-size:11px;resize:vertical;margin-top:8px;";
+    ta.addEventListener("click", function () { this.select(); });
+
+    var note = document.createElement("p");
+    note.id = "sync-reminder-note";
+    note.style.cssText = "color:#f59e0b;font-size:13px;margin-top:8px;";
+    note.innerHTML = '<strong>⚠️ 提醒：</strong>在 BiliNotes 控制台粘贴执行后，请 <strong>手动刷新页面 (F5)</strong> 即可在历史列表中看到同步的任务。';
+
+    var footer = document.querySelector("#sync-modal .sync-actions");
+    if (footer) {
+        footer.parentNode.insertBefore(ta, footer);
+        footer.parentNode.insertBefore(note, footer);
+    }
+}
+
 function openSyncModal() {
     $("sync-modal").classList.remove("hidden");
     $("sync-status").textContent = "";
+    var existing = document.getElementById("sync-script-textarea");
+    if (existing) existing.remove();
+    var existingNote = document.getElementById("sync-reminder-note");
+    if (existingNote) existingNote.remove();
 }
 
 function closeSyncModal() {
@@ -1038,67 +1043,39 @@ function closeSyncModal() {
 
 async function copySyncScript() {
     var statusEl = $("sync-status");
-    statusEl.textContent = "正在检查增量数据...";
+    var existingTa = document.getElementById("sync-script-textarea");
+    // 如果文本框已有脚本内容，直接复制
+    if (existingTa && existingTa.value) {
+        existingTa.select();
+        try {
+            document.execCommand("copy");
+            statusEl.textContent = "✅ 已复制！请到 BiliNotes 控制台 (F12→Console) 粘贴执行";
+        } catch (e) {
+            statusEl.textContent = "⚠️ 复制失败，请手动 Ctrl+C 复制上方文本";
+        }
+        return;
+    }
+    // 否则先获取脚本
+    statusEl.textContent = "正在生成注入脚本...";
     try {
         var res = await fetch("/api/bilinotes-sync");
         var data = await res.json();
-        if (!data.tasks || data.tasks.length === 0) {
+        if (!data.script) {
             statusEl.textContent = "没有可同步的任务";
             return;
         }
-        var syncApiBase = window.location.origin + "/api/bilinotes-sync";
-        var script = [
-            '(function(){',
-            '  var API="' + syncApiBase + '";',
-            '  var BATCH=15;',
-            '  var dbReq=indexedDB.open("keyval-store");',
-            '  dbReq.onupgradeneeded=function(e){e.target.result.createObjectStore("keyval");};',
-            '  dbReq.onsuccess=function(e){',
-            '    var db=e.target.result;',
-            '    var getReq=db.transaction("keyval","readonly").objectStore("keyval").get("task-storage");',
-            '    getReq.onsuccess=function(ev){',
-            '      var raw=ev.target.result,existing;',
-            '      if(typeof raw==="string"){try{existing=JSON.parse(raw)}catch(x){existing=null}}',
-            '      else if(raw&&typeof raw==="object"){existing=raw}else{existing=null}',
-            '      if(!existing||!existing.state||!Array.isArray(existing.state.tasks)){existing={state:{tasks:[],currentTaskId:null},version:0}}',
-            '      var existingIds=new Set(existing.state.tasks.map(function(t){return t.id}));',
-            '      var idsParam=Array.from(existingIds).join(",");',
-            '      var url=API+(idsParam?"?existing_ids="+encodeURIComponent(idsParam):"");',
-            '      fetch(url).then(function(r){return r.json()}).then(function(d){',
-            '        if(!d.tasks||d.tasks.length===0){alert("✅ 已是最新，无需同步");return}',
-            '        var toAdd=d.tasks.filter(function(t){return !existingIds.has(t.id)});',
-            '        if(toAdd.length===0){alert("✅ 已是最新，无需同步");return}',
-            '        var idx=0;',
-            '        function writeBatch(){',
-            '          var batch=toAdd.slice(idx,idx+BATCH);',
-            '          if(batch.length===0){alert("✅ 同步完成！新增"+toAdd.length+"个任务\\n请刷新页面查看");return}',
-            '          batch.forEach(function(t){existing.state.tasks.unshift(t)});',
-            '          var tx=db.transaction("keyval","readwrite");',
-            '          tx.objectStore("keyval").put(JSON.stringify(existing),"task-storage");',
-            '          tx.oncomplete=function(){idx+=BATCH;console.log("已同步"+Math.min(idx,toAdd.length)+"/"+toAdd.length);setTimeout(writeBatch,80)};',
-            '        }',
-            '        writeBatch();',
-            '      }).catch(function(err){console.error("❌ 获取数据失败:",err)});',
-            '    };',
-            '  };',
-            '  dbReq.onerror=function(){console.error("❌ 无法打开IndexedDB")};',
-            '})();'
-        ].join("\n");
-
-        var ta = document.createElement("textarea");
-        ta.value = script;
-        ta.style.position = "fixed";
-        ta.style.left = "-9999px";
-        document.body.appendChild(ta);
-        ta.select();
-        try {
-            document.execCommand("copy");
-            statusEl.textContent = "✅ 脚本已复制！请到 BiliNotes 控制台粘贴执行（自动增量同步）";
-        } catch (e) {
-            statusEl.textContent = "⚠️ 自动复制失败";
-            prompt("请复制以下脚本：", script);
+        showScriptInModal(data.script);
+        // 重新获取刚插入的 textarea 并选中复制
+        var ta = document.getElementById("sync-script-textarea");
+        if (ta) {
+            ta.select();
+            try {
+                document.execCommand("copy");
+                statusEl.textContent = "✅ 已复制 " + data.count + " 条！请到 BiliNotes 控制台 (F12→Console) 粘贴执行";
+            } catch (e) {
+                statusEl.textContent = "⚠️ 复制失败，请手动 Ctrl+C 复制上方文本";
+            }
         }
-        document.body.removeChild(ta);
     } catch (err) {
         statusEl.textContent = "❌ 获取任务数据失败：" + err.message;
     }

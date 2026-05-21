@@ -737,7 +737,107 @@ def bilinotes_sync():
             },
         }
         tasks.append(task)
-    return jsonify({"tasks": tasks, "count": len(tasks)})
+
+    # ── 服务端生成注入脚本：数据直接嵌入，按原版可靠结构写入 IndexedDB ──
+    tasks_json_str = json.dumps(tasks, ensure_ascii=False)
+
+    injection_script = f"""
+(async function() {{
+    console.log('%c[BiliNote Sync] 开始同步...', 'color: #3b82f6; font-weight: bold; font-size: 14px;');
+    const payload = {repr(tasks_json_str)};
+    const incoming = JSON.parse(payload);
+    if (!incoming || incoming.length === 0) {{
+        console.warn('[BiliNote Sync] 无待同步数据');
+        return;
+    }}
+    console.log('[BiliNote Sync] 待写入任务数:', incoming.length);
+
+    const DB_NAME = 'keyval-store';
+    const STORE_NAME = 'keyval';
+    const STORAGE_KEY = 'task-storage';
+
+    const req = indexedDB.open(DB_NAME);
+    req.onerror = (e) => console.error('[BiliNote Sync] 无法打开 IndexedDB:', e);
+
+    req.onsuccess = function(e) {{
+        const db = e.target.result;
+        let store;
+        try {{ store = db.transaction([STORE_NAME], 'readonly').objectStore(STORE_NAME); }}
+        catch (err) {{ console.error('[BiliNote Sync] store 不存在:', err); return; }}
+
+        const getReq = store.get(STORAGE_KEY);
+        getReq.onsuccess = function(ev) {{
+            let raw = ev.target.result;
+            let existing;
+            if (typeof raw === 'string') {{
+                try {{ existing = JSON.parse(raw); }} catch(x) {{ existing = null; }}
+            }} else if (raw && typeof raw === 'object') {{
+                existing = raw;
+            }} else {{
+                existing = null;
+            }}
+            if (!existing || !existing.state || !Array.isArray(existing.state.tasks)) {{
+                existing = {{ state: {{ tasks: [], currentTaskId: null }}, version: 0 }};
+            }}
+
+            const existingIds = new Set(existing.state.tasks.map(function(t) {{ return t.id; }}));
+            const toAdd = incoming.filter(function(t) {{ return !existingIds.has(t.id); }});
+            console.log('[BiliNote Sync] 已有 ' + existing.state.tasks.length + ' 条, 新增 ' + toAdd.length + ' 条');
+
+            if (toAdd.length === 0) {{
+                console.log('%c[BiliNote Sync] 已是最新，无需同步', 'color: #10b981;');
+                return;
+            }}
+
+            // 逐条写入，每条独立事务（避免大批量事务超时/锁冲突）
+            let done = 0;
+            function writeOne(index) {{
+                if (index >= toAdd.length) {{
+                    console.log('%c[BiliNote Sync] 同步完成！共写入 ' + done + ' 条', 'color: #10b981; font-weight: bold; font-size: 14px;');
+                    console.log('%c[BiliNote Sync] 即将刷新页面...', 'color: #f59e0b;');
+                    setTimeout(function() {{ window.location.reload(); }}, 600);
+                    return;
+                }}
+                const task = toAdd[index];
+                existing.state.tasks.unshift(task);
+
+                const tx = db.transaction([STORE_NAME], 'readwrite');
+                const st = tx.objectStore(STORE_NAME);
+                const putReq = st.put(JSON.stringify(existing), STORAGE_KEY);
+
+                putReq.onsuccess = function() {{
+                    done++;
+                    if (done % 10 === 0 || done === toAdd.length) {{
+                        console.log('[BiliNote Sync] 进度: ' + done + '/' + toAdd.length);
+                    }}
+                }};
+
+                tx.oncomplete = function() {{
+                    setTimeout(function() {{ writeOne(index + 1); }}, 15);
+                }};
+
+                tx.onerror = function(err) {{
+                    console.error('[BiliNote Sync] 写入失败 (#' + index + '):', err);
+                    // 回滚 unshift，继续下一条
+                    existing.state.tasks.shift();
+                    setTimeout(function() {{ writeOne(index + 1); }}, 15);
+                }};
+            }}
+
+            writeOne(0);
+        }};
+
+        getReq.onerror = function() {{
+            console.error('[BiliNote Sync] 读取现有数据失败');
+        }};
+    }};
+}})();
+    """
+
+    return jsonify({
+        "script": injection_script.strip(),
+        "count": len(tasks)
+    })
 
 
 # ── 启动入口 ──────────────────────────────────────────────
