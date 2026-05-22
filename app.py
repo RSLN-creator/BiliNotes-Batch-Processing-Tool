@@ -95,6 +95,65 @@ def get_provider_models(provider_id):
         return jsonify({"connected": False, "models": [], "error": "无法连接 BiliNote 服务"})
 
 
+@app.route("/api/bilibili-video-info/<bvid>")
+def bilibili_video_info(bvid):
+    """查询B站API获取视频真实分P数"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://www.bilibili.com/",
+    }
+    try:
+        resp = requests.get(
+            f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}",
+            headers=headers, timeout=8
+        )
+        body = resp.json()
+        if body.get("code") != 0:
+            return jsonify({"error": body.get("message", "B站API失败")}), 502
+        v = body["data"]
+        pages = v.get("pages", [])
+        return jsonify({
+            "bvid": bvid,
+            "title": v.get("title", ""),
+            "pageCount": len(pages),
+            "pages": [{"page": p["page"], "part": p["part"]} for p in pages],
+        })
+    except requests.RequestException as e:
+        return jsonify({"error": f"B站API请求失败: {e}"}), 502
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/multip-cache", methods=["GET", "POST"])
+def multip_cache():
+    """读取/写入 _已检测分P.json（跟随输出目录，含已处理分P追踪）"""
+    output_dir = request.args.get("output_dir", str(OUTPUT_DIR))
+    cache_path = Path(output_dir) / "_已检测分P.json"
+    if request.method == "GET":
+        if cache_path.exists():
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+        else:
+            data = {}
+        if "_processed" not in data:
+            data["_processed"] = {}
+        if "_detected" not in data:
+            # 迁移旧格式：顶层key移动到_detected（保留全部，含pc=1用于跟踪已检测）
+            detected = {k: v for k, v in data.items() if k not in ("_processed", "_detected") and isinstance(v, int)}
+            data["_detected"] = detected
+            for k in list(data.keys()):
+                if k not in ("_detected", "_processed"):
+                    del data[k]
+        data.setdefault("_detected", {})
+        return jsonify(data)
+    elif request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(str(tmp), str(cache_path))
+        return jsonify({"ok": True})
+
+
 @app.route("/api/check-connection")
 def check_connection():
     try:
@@ -166,13 +225,18 @@ def process_video():
     output_dir = Path(data.get("output_dir", str(OUTPUT_DIR)))
     save_opts = data.get("save_options", ["markdown", "transcript", "json"])
     p_num = data.get("p", 1) or 1
+    model_name = data.get("model_name", "").strip()
+    provider_id = data.get("provider_id", "").strip()
+
+    if not model_name or not provider_id:
+        return jsonify({"error": "请先选择供应商和模型"}), 400
 
     params = {
         "video_url": url,
         "platform": "bilibili",
         "quality": data.get("quality", "medium"),
-        "model_name": data.get("model_name", ""),
-        "provider_id": data.get("provider_id", ""),
+        "model_name": model_name,
+        "provider_id": provider_id,
         "format": data.get("format", ["markdown"]),
         "style": data.get("style", "detailed"),
         "screenshot": data.get("screenshot", False),
@@ -281,57 +345,89 @@ def force_retranscribe():
     if not bvid:
         return jsonify({"error": "缺少 bvid"}), 400
     records = load_checkpoint()
-    rec = records.get(bvid)
-    if not rec:
+    # 找该 bvid 所有分P 的记录
+    matching = [(k, r) for k, r in records.items() if k.startswith(f"{bvid}|")]
+    if not matching:
         return jsonify({"error": "未找到该视频的处理记录"}), 404
-    task_id = rec.get("task_id", "")
     deleted = []
-    docker_ok = False
-    if task_id:
-        try:
-            proc = subprocess.run(
-                ["docker", "exec", "bilinote-backend", "rm", "-f",
-                 f"/app/note_results/{task_id}_transcript.json",
-                 f"/app/note_results/{task_id}_audio.json",
-                 f"/app/note_results/{task_id}.json",
-                 f"/app/note_results/{task_id}.status.json"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if proc.returncode == 0:
-                docker_ok = True
-                deleted = [f"{task_id}_transcript.json", f"{task_id}_audio.json",
-                           f"{task_id}.json", f"{task_id}.status.json"]
-            else:
-                app.logger.warning("删除BiliNotes缓存失败, returncode=%d, stderr=%s", proc.returncode, proc.stderr)
-        except Exception as e:
-            app.logger.warning("删除BiliNotes缓存失败: %s", e)
-    if not docker_ok and task_id:
-        return jsonify({"error": "无法删除BiliNotes容器内缓存，请确认Docker容器正在运行", "bvid": bvid}), 503
-    if bvid in records:
-        del records[bvid]
-        _save_checkpoint_file(records)
-    if task_id in _completed_tasks:
-        _completed_tasks.discard(task_id)
-    if task_id in _task_map:
-        del _task_map[task_id]
-    return jsonify({"ok": True, "bvid": bvid, "deleted_cache": deleted})
+    for key, rec in matching:
+        task_id = rec.get("task_id", "")
+        if task_id:
+            try:
+                proc = subprocess.run(
+                    ["docker", "exec", "bilinote-backend", "rm", "-f",
+                     f"/app/note_results/{task_id}_transcript.json",
+                     f"/app/note_results/{task_id}_audio.json",
+                     f"/app/note_results/{task_id}.json",
+                     f"/app/note_results/{task_id}.status.json"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if proc.returncode == 0:
+                    deleted.append(task_id)
+                else:
+                    app.logger.warning("删除BiliNotes缓存失败, returncode=%d, stderr=%s", proc.returncode, proc.stderr)
+            except Exception as e:
+                app.logger.warning("删除BiliNotes缓存失败: %s", e)
+    # 删除 output 目录下对应分P的笔记文件
+    import shutil
+    deleted_dirs = []
+    for key, rec in matching:
+        rec_output_dir = Path(rec.get("output_dir", str(OUTPUT_DIR)))
+        safe_title = sanitize_filename(rec.get("title", ""), max_len=80)
+        safe_folder = sanitize_filename(rec.get("folder", "未分类"), max_len=60)
+        p_num = int(rec.get("p", 1) or 1)
+        p_suffix = f" - P{p_num}" if p_num > 1 else ""
+        dir_name = f"{bvid} - {safe_title}{p_suffix}"
+        target_dir = rec_output_dir / safe_folder / dir_name
+        if target_dir.exists():
+            try:
+                shutil.rmtree(str(target_dir))
+                deleted_dirs.append(str(target_dir))
+            except Exception as e:
+                app.logger.warning("删除输出目录失败 %s: %s", target_dir, e)
+    # 删除 checkpoint 中该 bvid 的所有记录
+    keys_to_delete = [k for k in records if k.startswith(f"{bvid}|")]
+    for k in keys_to_delete:
+        del records[k]
+    _save_checkpoint_file(records)
+    for rec2 in matching:
+        tid = rec2[1].get("task_id", "")
+        _completed_tasks.discard(tid)
+        if tid in _task_map:
+            del _task_map[tid]
+    # 同时清除该 bvid 的多P缓存
+    try:
+        multip_cache_path = Path(OUTPUT_DIR) / "_已检测分P.json"
+        if multip_cache_path.exists():
+            mp = json.loads(multip_cache_path.read_text(encoding="utf-8"))
+            if bvid in mp.get("_processed", {}):
+                del mp["_processed"][bvid]
+                tmp = multip_cache_path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(mp, ensure_ascii=False, indent=2), encoding="utf-8")
+                os.replace(str(tmp), str(multip_cache_path))
+    except Exception:
+        pass
+    return jsonify({"ok": True, "bvid": bvid, "deleted_cache": deleted, "deleted_dirs": len(deleted_dirs)})
 
 
 @app.route("/api/backfill-transcript-source", methods=["POST"])
 def backfill_transcript_source():
     records = load_checkpoint()
     updated = 0
-    for bvid, rec in records.items():
+    for key, rec in records.items():
         if rec.get("status") != "SUCCESS":
             continue
         if rec.get("transcript_source"):
             continue
         task_id = rec.get("task_id", "")
         source = ""
+        bvid = _bvid_from_key(key)
+        p_num = int(rec.get("p", 1) or 1)
         output_dir = Path(rec.get("output_dir", str(OUTPUT_DIR)))
         safe_folder = sanitize_filename(rec.get("folder", "未分类"), max_len=60)
         safe_title = sanitize_filename(rec.get("title", ""), max_len=80)
-        dir_name = f"{bvid} - {safe_title}"
+        p_suffix = f" - P{p_num}" if p_num > 1 else ""
+        dir_name = f"{bvid} - {safe_title}{p_suffix}"
         json_path = output_dir / safe_folder / dir_name / "完整.json"
         if not json_path.exists() and output_dir.exists():
             for d in output_dir.rglob(bvid + "*"):
@@ -378,18 +474,19 @@ def backfill_transcript_source():
 @app.route("/api/checkpoint")
 def get_checkpoint():
     records = load_checkpoint()
-    return jsonify({"records": records, "processed": sorted([b for b, r in records.items() if r.get("status") == "SUCCESS"])})
+    return jsonify({"records": records, "processed": sorted([k for k, r in records.items() if r.get("status") == "SUCCESS"])})
 
 
 @app.route("/api/checkpoint/<bvid>", methods=["DELETE"])
 def delete_checkpoint(bvid):
     records = load_checkpoint()
-    if bvid in records:
-        del records[bvid]
+    keys_to_delete = [k for k in records if k.startswith(f"{bvid}|")]
+    for k in keys_to_delete:
+        del records[k]
+    if keys_to_delete:
         _save_checkpoint_file(records)
-        _processed_bvids.discard(bvid)
-        return jsonify({"ok": True})
-    return jsonify({"ok": True})
+    _processed_bvids.discard(bvid)
+    return jsonify({"ok": True, "deleted": len(keys_to_delete)})
 
 
 @app.route("/api/open-file")
@@ -409,14 +506,26 @@ def open_local_file():
 
 @app.route("/api/get-output-files/<bvid>")
 def get_output_files(bvid):
+    # 支持 ?p=N 指定分P；未指定则取该 bvid 下任意一条记录
+    p_param = request.args.get("p", "")
     records = load_checkpoint()
-    rec = records.get(bvid)
+    if p_param.isdigit():
+        key = _ckey(bvid, int(p_param))
+        rec = records.get(key)
+    else:
+        rec = None
+        for k, r in records.items():
+            if _bvid_from_key(k) == bvid:
+                rec = r
+                break
     if not rec:
-        return jsonify({"files": []})
+        return jsonify({"files": [], "p": None})
     output_dir = Path(rec.get("output_dir", str(OUTPUT_DIR)))
     safe_folder = sanitize_filename(rec.get("folder", "未分类"), max_len=60)
     safe_title = sanitize_filename(rec.get("title", ""), max_len=80)
-    dir_name = f"{bvid} - {safe_title}"
+    p_num = int(rec.get("p", 1) or 1)
+    p_suffix = f" - P{p_num}" if p_num > 1 else ""
+    dir_name = f"{bvid} - {safe_title}{p_suffix}"
     dest_dir = output_dir / safe_folder / dir_name
     files = []
     if dest_dir.exists():
@@ -432,7 +541,7 @@ def get_output_files(bvid):
                 if files:
                     dest_dir = d
                     break
-    return jsonify({"files": files, "dir": str(dest_dir.resolve()) if dest_dir.exists() else ""})
+    return jsonify({"files": files, "dir": str(dest_dir.resolve()) if dest_dir.exists() else "", "p": p_num})
 
 
 # ── 文件解析函数 ──────────────────────────────────────────
@@ -632,15 +741,168 @@ def save_video_output(folder_name, bvid, title, result, output_dir, save_opts=No
         json_path = dest_dir / f"完整.json"
         json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         paths["json"] = str(json_path)
-    # 思维导图 (如果 BiliNote 返回了)
+    # 思维导图 — 从 markdown 标题层级生成 SVG
     if "mindmap" in save_opts:
-        mindmap = result.get("mindmap", "") or ""
-        if mindmap:
-            mm_path = dest_dir / f"思维导图.md"
-            mm_path.write_text(mindmap, encoding="utf-8")
+        md_content = result.get("markdown", "") or ""
+        if md_content:
+            mm_svg = _markdown_to_mindmap_svg(md_content, title or "笔记")
+            mm_path = dest_dir / f"思维导图.svg"
+            mm_path.write_text(mm_svg, encoding="utf-8")
             paths["mindmap"] = str(mm_path)
 
     return paths
+
+
+def _markdown_to_mindmap_svg(md_text, root_title="笔记"):
+    """解析 markdown 标题层级，生成水平树形 SVG 思维导图"""
+    import re as _re
+    # 提取 # ## ### #### 标题及其层级
+    lines = md_text.split("\n")
+    nodes = []  # [(level, text, line_idx)]
+    for line in lines:
+        m = _re.match(r"^(#{1,6})\s+(.+)", line.strip())
+        if m:
+            level = len(m.group(1))
+            text = m.group(2).strip()
+            # 跳过太长或太短的标题
+            if 1 <= len(text) <= 80:
+                nodes.append((level, text))
+
+    if not nodes:
+        return '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="50"><text x="10" y="30" font-size="14">无标题节点</text></svg>'
+
+    # 限制节点数量避免 SVG 过大
+    if len(nodes) > 80:
+        nodes = nodes[:80]
+
+    # 构建树结构: [{text, children:[...], depth, x, y}]
+    root = {"text": root_title, "children": [], "depth": 0}
+    stack = [(root, 0)]  # (parent_node, parent_level)
+
+    for level, text in nodes:
+        node = {"text": text, "children": [], "depth": level}
+        # 找到合适的父节点
+        while stack and stack[-1][1] >= level:
+            stack.pop()
+        if stack:
+            parent = stack[-1][0]
+        else:
+            parent = root
+        parent["children"].append(node)
+        stack.append((node, level))
+
+    # 计算布局
+    CHAR_W = 14  # 每字符宽度（中文约14px at 14pt）
+    NODE_H = 28
+    LEVEL_W = 180
+    V_GAP = 6
+
+    def calc_layout(node, depth):
+        """递归计算每个节点的 y 坐标，返回子树总高度"""
+        node["depth"] = depth
+        node["x"] = 20 + depth * LEVEL_W
+        if not node["children"]:
+            node["h"] = NODE_H
+            node["y"] = 0
+            return NODE_H + V_GAP
+        total = 0
+        for child in node["children"]:
+            total += calc_layout(child, depth + 1)
+        # 父节点居中
+        first_child = node["children"][0]
+        last_child = node["children"][-1]
+        mid = (first_child["y"] + last_child["y"] + NODE_H) / 2 - NODE_H / 2
+        node["y"] = mid
+        node["h"] = NODE_H
+        return total
+
+    y_start = 20
+    # First pass: calculate child heights
+    total_h = 0
+    for child in root["children"]:
+        total_h += calc_layout(child, 1)
+
+    # Position root
+    root["x"] = 10
+    if root["children"]:
+        fc = root["children"][0]
+        lc = root["children"][-1]
+        root["y"] = (fc["y"] + lc["y"] + NODE_H) / 2 - NODE_H / 2
+    else:
+        root["y"] = 0
+    root["h"] = NODE_H
+
+    # 计算 SVG 尺寸
+    all_nodes = []
+    def collect(node):
+        all_nodes.append(node)
+        for child in node["children"]:
+            collect(child)
+    collect(root)
+
+    max_x = max(n["x"] + len(n["text"]) * CHAR_W + 30 for n in all_nodes) if all_nodes else 300
+    max_y = max(n["y"] + NODE_H for n in all_nodes) + 20 if all_nodes else 100
+
+    # 生成 SVG
+    svg_lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{max_x}" height="{max_y}" '
+        f'style="background:#1a1a2e;font-family:sans-serif;">',
+        '<defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="0%">'
+        '<stop offset="0%" stop-color="#6366f1"/><stop offset="100%" stop-color="#a855f7"/></linearGradient></defs>',
+    ]
+
+    # 画连线
+    def draw_lines(node):
+        for child in node["children"]:
+            x1 = node["x"] + len(node["text"]) * CHAR_W + 10
+            y1 = node["y"] + NODE_H / 2
+            x2 = child["x"]
+            y2 = child["y"] + NODE_H / 2
+            svg_lines.append(
+                f'<path d="M{x1},{y1} C{x1+50},{y1} {x2-50},{y2} {x2},{y2}" '
+                f'stroke="#4b5563" stroke-width="1.5" fill="none"/>')
+            draw_lines(child)
+
+    draw_lines(root)
+
+    # 画节点
+    def draw_nodes(node):
+        is_root = node["depth"] == 0
+        fill = "url(#g)" if is_root else "#2d2d4a"
+        stroke = "#818cf8" if is_root else "#4b5563"
+        rx = 8 if is_root else 4
+        text_w = len(node["text"]) * CHAR_W + 20
+        x = node["x"]
+        y = node["y"]
+        svg_lines.append(
+            f'<rect x="{x}" y="{y}" width="{text_w}" height="{NODE_H}" rx="{rx}" '
+            f'fill="{fill}" stroke="{stroke}" stroke-width="1"/>')
+        tc = "#e0e7ff" if is_root else "#c4b5fd"
+        fs = "15" if is_root else "13"
+        svg_lines.append(
+            f'<text x="{x+10}" y="{y+19}" font-size="{fs}" fill="{tc}" '
+            f'font-weight="{("bold" if is_root else "normal")}">{_escape_svg(node["text"])}</text>')
+        for child in node["children"]:
+            draw_nodes(child)
+
+    draw_nodes(root)
+    svg_lines.append("</svg>")
+    return "\n".join(svg_lines)
+
+
+def _escape_svg(text):
+    """转义 SVG 文本中的特殊字符"""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def _ckey(bvid, p_num):
+    """生成 checkpoint 复合键: bvid|pNum"""
+    return f"{bvid}|{int(p_num) if p_num else 1}"
+
+
+def _bvid_from_key(key):
+    """从复合键提取 bvid"""
+    return key.rsplit("|", 1)[0] if "|" in key else key
 
 
 def load_checkpoint(output_dir=None):
@@ -654,22 +916,33 @@ def load_checkpoint(output_dir=None):
     except (json.JSONDecodeError, OSError):
         app.logger.warning("Checkpoint 文件损坏，将从头开始")
         return {}
-    # 兼容旧记录：补全缺失字段
     need_save = False
-    for bvid, rec in records.items():
-        for key, default in [("p", 1), ("cover", ""), ("ownerName", ""), ("ownerMid", ""), ("pageCount", 1), ("description", "")]:
-            if key not in rec:
-                rec[key] = default
+    # 迁移旧格式：key 不含 | 的是旧记录，转为 bvid|pN
+    new_records = {}
+    for key, rec in list(records.items()):
+        if "|" in key:
+            new_records[key] = rec
+        else:
+            p = int(rec.get("p", 1) or 1)
+            new_key = _ckey(key, p)
+            new_records[new_key] = rec
+            need_save = True
+    # 补全缺失字段
+    for key, rec in new_records.items():
+        for fld, default in [("p", 1), ("cover", ""), ("ownerName", ""), ("ownerMid", ""), ("pageCount", 1), ("description", "")]:
+            if fld not in rec:
+                rec[fld] = default
                 need_save = True
     if need_save:
-        _save_checkpoint_file(records)
-    return records
+        _save_checkpoint_file(new_records)
+    return new_records
 
 
 def update_checkpoint(bvid, status, task_id, output_dir=None, folder="", title="", transcript_source="", p_num=1, cover="", ownerName="", ownerMid="", pageCount=1, description=""):
     actual_output_dir = str(output_dir) if output_dir else str(OUTPUT_DIR)
     records = load_checkpoint()
-    records[bvid] = {
+    key = _ckey(bvid, p_num)
+    records[key] = {
         "task_id": task_id,
         "status": status,
         "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -698,10 +971,10 @@ def _save_checkpoint_file(records):
 
 # ── 模块初始化：加载 checkpoint ───────────────────────────
 _checkpoint_data = load_checkpoint()
-for _bvid, _rec in _checkpoint_data.items():
+for _key, _rec in _checkpoint_data.items():
     if _rec.get("status") == "SUCCESS":
-        _processed_bvids.add(_bvid)
-app.logger.info("从 checkpoint 加载了 %d 个已处理视频", len(_processed_bvids))
+        _processed_bvids.add(_bvid_from_key(_key))
+app.logger.info("从 checkpoint 加载了 %d 个已处理记录 (%d 个独立BV)", len(_checkpoint_data), len(_processed_bvids))
 
 
 @app.route("/api/copy-files", methods=["POST"])
@@ -717,44 +990,61 @@ def copy_files():
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
     records = load_checkpoint()
-    copied = 0
-    errors = []
-    for bvid, rec in records.items():
+    # 按 bvid 分组，同视频多P 放到一个文件夹
+    groups = {}
+    for key, rec in records.items():
         if rec.get("status") != "SUCCESS":
             continue
-        rec_output_dir = Path(rec.get("output_dir", str(OUTPUT_DIR)))
-        safe_folder = sanitize_filename(rec.get("folder", "未分类"), max_len=60)
-        safe_title = sanitize_filename(rec.get("title", ""), max_len=80)
-        dir_name = f"{bvid} - {safe_title}"
-        src_dir = rec_output_dir / safe_folder / dir_name
-        if not src_dir.exists() and rec_output_dir.exists():
-            found = None
-            for d in rec_output_dir.rglob(bvid + "*"):
-                if d.is_dir():
-                    found = d
-                    break
-            src_dir = found if found else src_dir
-        if not src_dir.exists():
-            continue
-        for f in src_dir.iterdir():
-            if not f.is_file() or f.name.startswith("_"):
+        bvid = _bvid_from_key(key)
+        groups.setdefault(bvid, []).append(rec)
+    copied = 0
+    errors = []
+    for bvid, recs in groups.items():
+        safe_title = sanitize_filename(recs[0].get("title", ""), max_len=80)
+        video_dir_name = f"{bvid} - {safe_title}"
+        video_dir = dest / video_dir_name
+        video_dir.mkdir(parents=True, exist_ok=True)
+        for rec in recs:
+            rec_output_dir = Path(rec.get("output_dir", str(OUTPUT_DIR)))
+            safe_folder = sanitize_filename(rec.get("folder", "未分类"), max_len=60)
+            p_num = int(rec.get("p", 1) or 1)
+            p_label = f"P{p_num}"
+            p_suffix = f" - P{p_num}" if p_num > 1 else ""
+            src_dir_name = f"{bvid} - {safe_title}{p_suffix}"
+            src_dir = rec_output_dir / safe_folder / src_dir_name
+            if not src_dir.exists() and rec_output_dir.exists():
+                found = None
+                for d in rec_output_dir.rglob(bvid + "*"):
+                    if d.is_dir() and d.name.endswith(p_suffix):
+                        found = d
+                        break
+                if not found:
+                    for d in rec_output_dir.rglob(bvid + "*"):
+                        if d.is_dir():
+                            found = d
+                            break
+                src_dir = found if found else src_dir
+            if not src_dir.exists():
                 continue
-            match = False
-            if file_type == "md" and f.name == "笔记.md":
-                match = True
-            elif file_type == "txt" and f.name == "原文.txt":
-                match = True
-            elif file_type == "json" and f.name == "完整.json":
-                match = True
-            elif file_type == "mindmap" and f.name == "思维导图.md":
-                match = True
-            if match:
-                try:
-                    new_name = f"{dir_name} - {f.name}"
-                    shutil.copy2(str(f), str(dest / new_name))
-                    copied += 1
-                except Exception as e:
-                    errors.append(f"{f.name}: {e}")
+            for f in src_dir.iterdir():
+                if not f.is_file() or f.name.startswith("_"):
+                    continue
+                match = False
+                if file_type == "md" and f.name == "笔记.md":
+                    match = True
+                elif file_type == "txt" and f.name == "原文.txt":
+                    match = True
+                elif file_type == "json" and f.name == "完整.json":
+                    match = True
+                elif file_type == "mindmap" and (f.name == "思维导图.md" or f.name == "思维导图.svg"):
+                    match = True
+                if match:
+                    try:
+                        new_name = f"{f.stem} - {p_label}{f.suffix}"
+                        shutil.copy2(str(f), str(video_dir / new_name))
+                        copied += 1
+                    except Exception as e:
+                        errors.append(f"{bvid} {p_label} {f.name}: {e}")
     return jsonify({"copied": copied, "errors": errors})
 
 
@@ -763,12 +1053,14 @@ def bilinotes_sync():
     existing_ids = set(request.args.get("existing_ids", "").split(",")) if request.args.get("existing_ids") else set()
     records = load_checkpoint()
     tasks = []
-    for bvid, rec in records.items():
+    for key, rec in records.items():
         if rec.get("status") != "SUCCESS":
             continue
         task_id = rec.get("task_id", "")
         if task_id in existing_ids:
             continue
+        bvid = _bvid_from_key(key)
+        p_num = int(rec.get("p", 1) or 1)
         try:
             resp = requests.get(
                 f"{BILINOTE_BASE_URL}/api/task_status/{task_id}", timeout=5

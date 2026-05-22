@@ -91,6 +91,8 @@ document.addEventListener("DOMContentLoaded", function () {
     startBtn.addEventListener("click", function () { startBatch(false); });
     startSelectedBtn.addEventListener("click", function () { startBatch(true); });
     stopBtn.addEventListener("click", stopBatch);
+    $("start-multip-all-btn").addEventListener("click", function () { startMultipBatch(false); });
+    $("start-multip-selected-btn").addEventListener("click", function () { startMultipBatch(true); });
     pickDirBtn.addEventListener("click", pickOutputDir);
     bilinoteLinkBtn.addEventListener("click", function () { window.open(state.bilinoteUrl, "_blank"); });
     $("pick-export-dir-btn").addEventListener("click", pickExportDir);
@@ -99,6 +101,7 @@ document.addEventListener("DOMContentLoaded", function () {
     $("copy-json-btn").addEventListener("click", function () { copyFiles("json"); });
     $("copy-mindmap-btn").addEventListener("click", function () { copyFiles("mindmap"); });
     $("sync-bilinotes-btn").addEventListener("click", syncToBilinotesDB);
+
     $("sync-modal-close").addEventListener("click", closeSyncModal);
     $("sync-copy-btn").addEventListener("click", copySyncScript);
     $("sync-modal").querySelector(".modal-overlay").addEventListener("click", closeSyncModal);
@@ -121,29 +124,44 @@ document.addEventListener("DOMContentLoaded", function () {
         });
     });
 
-    // 动态添加多P视频筛选芯片
+    // 动态添加多P筛选芯片
     var filterChips = document.querySelector(".filter-chips");
     if (filterChips) {
-        var mpChip = document.createElement("button");
-        mpChip.className = "filter-chip";
-        mpChip.setAttribute("data-filter", "multi_p");
-        mpChip.innerHTML = "多P视频";
-        mpChip.addEventListener("click", function () {
-            document.querySelectorAll(".filter-chip").forEach(function (c) { c.classList.remove("active"); });
-            mpChip.classList.add("active");
-            state.statusFilter = "multi_p";
-            state.currentPage = 1;
-            selectAllCb.checked = false;
-            renderVideoList();
+        var mpFilters = [
+            { filter: "multi_unprocessed", label: "多P待处理" },
+            { filter: "multi_partial", label: "多P部分处理" },
+            { filter: "multi_full", label: "多P全处理" },
+        ];
+        mpFilters.forEach(function (f) {
+            var chip = document.createElement("button");
+            chip.className = "filter-chip";
+            chip.setAttribute("data-filter", f.filter);
+            chip.innerHTML = f.label;
+            chip.addEventListener("click", function () {
+                document.querySelectorAll(".filter-chip").forEach(function (c) { c.classList.remove("active"); });
+                chip.classList.add("active");
+                state.statusFilter = f.filter;
+                state.currentPage = 1;
+                selectAllCb.checked = false;
+                renderVideoList();
+            });
+            filterChips.appendChild(chip);
         });
-        filterChips.appendChild(mpChip);
     }
 
-    // 文件夹筛选下拉（视图切换旁，包裹在同一容器避免 space-between 推远）
+    // 文件夹筛选下拉 + 检测多P按钮 + 视图切换 包裹在同一容器
     var viewToggle = document.querySelector(".view-toggle");
     if (viewToggle) {
         var wrapper = document.createElement("div");
         wrapper.style.cssText = "display:flex;align-items:center;gap:6px;";
+        // 检测多P按钮
+        var detectBtn = document.createElement("button");
+        detectBtn.id = "detect-multip-btn";
+        detectBtn.className = "filter-chip";
+        detectBtn.title = "通过B站API检测真实分P数";
+        detectBtn.textContent = "🔍 检测多P";
+        detectBtn.addEventListener("click", detectMultiPVideos);
+        // 文件夹下拉
         var folderSel = document.createElement("select");
         folderSel.id = "folder-filter-select";
         folderSel.style.cssText = "padding:5px 10px;font-size:0.82rem;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:8px;max-width:140px;cursor:pointer;";
@@ -154,6 +172,7 @@ document.addEventListener("DOMContentLoaded", function () {
             renderVideoList();
         });
         viewToggle.parentNode.insertBefore(wrapper, viewToggle);
+        wrapper.appendChild(detectBtn);
         wrapper.appendChild(folderSel);
         wrapper.appendChild(viewToggle);
     }
@@ -201,7 +220,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
     initTheme();
     restoreConfig();
-    loadCheckpoint();
+    loadCheckpoint().then(function () { return loadMultipCache(); }).then(function () { renderVideoList(); });
     loadTranscriberConfig();
     loadProviders();
     checkModelCapabilities();
@@ -366,6 +385,7 @@ async function loadFile(file) {
         document.querySelectorAll(".filter-chip").forEach(function (c) { c.classList.remove("active"); });
         document.querySelector('.filter-chip[data-filter="all"]').classList.add("active");
         await loadCheckpoint();
+        await loadMultipCache();
         renderVideoList();
         hideBanner();
     } catch (err) { showBanner("文件解析失败：" + err.message, "error"); }
@@ -573,16 +593,29 @@ function checkModelCapabilities() {
 }
 
 function getVideoStatus(bvid) {
-    var rec = state.processedRecords[bvid];
-    if (!rec) return "pending";
-    if (rec.status === "SUCCESS") return "done";
-    if (rec.status === "FAILED") return "failed";
+    // 复合键格式 bvid|pN，检查该 bvid 所有分P 的记录
+    var prefix = bvid + "|";
+    var hasSuccess = false, hasFailed = false;
+    for (var key in state.processedRecords) {
+        if (key === bvid || key.indexOf(prefix) === 0) {
+            var rec = state.processedRecords[key];
+            if (rec.status === "SUCCESS") hasSuccess = true;
+            if (rec.status === "FAILED") hasFailed = true;
+        }
+    }
+    if (hasSuccess) return "done";
+    if (hasFailed) return "failed";
     return "pending";
 }
 
 function isAiSubtitle(bvid) {
-    var rec = state.processedRecords[bvid];
-    return rec && rec.transcript_source === "ai_subtitle";
+    var prefix = bvid + "|";
+    for (var key in state.processedRecords) {
+        if (key === bvid || key.indexOf(prefix) === 0) {
+            if (state.processedRecords[key].transcript_source === "ai_subtitle") return true;
+        }
+    }
+    return false;
 }
 
 function getUniqueFolders() {
@@ -617,7 +650,9 @@ function getFilteredVideos() {
         if (filter === "done" && st !== "done") return false;
         if (filter === "failed" && st !== "failed") return false;
         if (filter === "ai_subtitle" && !isAiSubtitle(v.bvid)) return false;
-        if (filter === "multi_p" && (v.pageCount || 1) <= 1) return false;
+        if (filter === "multi_unprocessed" && getMultiPStatus(v.bvid) !== "unprocessed") return false;
+        if (filter === "multi_partial" && getMultiPStatus(v.bvid) !== "partial") return false;
+        if (filter === "multi_full" && getMultiPStatus(v.bvid) !== "full") return false;
         if (q) return (v.bvid || "").toLowerCase().indexOf(q) !== -1 || (v.title || "").toLowerCase().indexOf(q) !== -1 || (v.ownerName || "").toLowerCase().indexOf(q) !== -1 || (v.ownerMid || "").indexOf(q) !== -1;
         return true;
     });
@@ -644,6 +679,7 @@ function updateSelectedCount() {
     selectedCountEl.textContent = sel > 0 ? "已选 " + sel + "/" + total : "";
     selectedCountBtn.textContent = sel;
     startSelectedBtn.disabled = sel === 0;
+    updateMultipButtons();
 }
 
 function onSelectAll() {
@@ -727,6 +763,7 @@ function renderVideoList() {
     });
     videoCount.textContent = "共 " + state.videos.length + " 个（✓ " + doneCount + " / ✗ " + failedCount + " / 待 " + (state.videos.length - doneCount - failedCount) + "）";
     renderFolderDropdown();
+    updateMultipButtons();
 }
 
 function renderTableViewTo(container, filtered) {
@@ -778,12 +815,23 @@ function renderCardViewTo(container, filtered) {
             html += '<img class="card-cover" src="' + escapeHtml(v.cover) + '" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display=\'none\'">';
             html += '<div class="card-cover-overlay">';
             html += '<input type="checkbox" class="video-cb" value="' + v.bvid + '">';
+            html += '<div class="card-cover-right">';
             html += '<span class="card-cover-status ' + badgeClass + '">' + badgeLabel + '</span>';
-            html += '</div></div>';
+            if (isMultiP) {
+                var mpStat = getMultiPStatus(v.bvid);
+                var mpCls = mpStat === "full" ? "status-done" : mpStat === "partial" ? "status-partial" : "status-pending";
+                html += '<span class="status-badge ' + mpCls + ' card-mp' + '">' + renderMultiPStatusText(v) + '</span>';
+            }
+            html += '</div></div></div>';
         } else {
             html += '<div class="card-header">';
             html += '<input type="checkbox" class="video-cb" value="' + v.bvid + '">';
             html += '<span class="status-badge ' + badgeClass + '">' + badgeLabel + '</span>';
+            if (isMultiP) {
+                var mpStat2 = getMultiPStatus(v.bvid);
+                var mpCls2 = mpStat2 === "full" ? "status-done" : mpStat2 === "partial" ? "status-partial" : "status-pending";
+                html += '<span class="status-badge ' + mpCls2 + ' card-mp' + '">' + renderMultiPStatusText(v) + '</span>';
+            }
             html += '</div>';
         }
         // 标题
@@ -798,7 +846,14 @@ function renderCardViewTo(container, filtered) {
             }
         }
         html += '<span class="card-tag card-tag-bvid">' + escapeHtml(v.bvid) + '</span>';
-        if (isMultiP) html += '<span class="card-tag card-tag-multip">' + v.pageCount + 'P</span>';
+        if (isMultiP) {
+            var mpStatus = getMultiPStatus(v.bvid);
+            var mpLabel, mpCls;
+            if (mpStatus === "full") { mpLabel = v.pageCount + "P全处理"; mpCls = " multip-full"; }
+            else if (mpStatus === "partial") { mpLabel = (multipCache._processed[v.bvid] || []).length + "/" + v.pageCount + "P已处理"; mpCls = " multip-partial"; }
+            else { mpLabel = v.pageCount + "P未处理"; mpCls = " multip-unprocessed"; }
+            html += '<span class="card-tag card-tag-multip multip-clickable' + mpCls + '" data-bvid="' + v.bvid + '" title="点击选择要处理的分P">' + mpLabel + '</span>';
+        }
         if (aiSub) html += '<span class="card-tag card-tag-ai">⚠️ AI字幕</span>';
         html += '<span class="card-tag card-tag-folder" data-folder="' + escapeHtml(v.folder || "未分类") + '" title="点击筛选此分组">' + escapeHtml(v.folder || "未分类") + '</span>';
         if (v.description) {
@@ -825,10 +880,112 @@ function renderOwnerLink(v) {
     return '<span class="owner-name">' + name + '</span>';
 }
 
+function renderMultiPStatusText(v) {
+    var status = getMultiPStatus(v.bvid);
+    var pc = v.pageCount || 1;
+    if (status === "full") return pc + "P 全处理";
+    if (status === "partial") return (multipCache._processed[v.bvid] || []).length + "/" + pc + "P 已处理";
+    return pc + "P 未处理";
+}
+
 function renderMultiPBadge(v) {
     var pc = v.pageCount || 1;
     if (pc <= 1) return "";
-    return '<span class="multip-badge" title="' + pc + 'P视频">' + pc + 'P</span> ';
+    var status = getMultiPStatus(v.bvid);
+    var label, cls;
+    if (status === "full") { label = pc + "P全处理"; cls = " multip-full"; }
+    else if (status === "partial") { var done = (multipCache._processed[v.bvid] || []).length; label = done + "/" + pc + "P已处理"; cls = " multip-partial"; }
+    else { label = pc + "P未处理"; cls = " multip-unprocessed"; }
+    return '<span class="multip-badge multip-clickable' + cls + '" data-bvid="' + v.bvid + '" title="点击选择要处理的分P">' + label + '</span> ';
+}
+
+function showMultipPanel(v) {
+    var existing = document.getElementById("multip-panel");
+    if (existing) existing.remove();
+    var panel = document.createElement("div");
+    panel.id = "multip-panel";
+    var sel = state.videoPageSelections[v.bvid] || [1];
+    var pc = v.pageCount || 1;
+    var html = '<div style="padding:8px 12px;border-bottom:1px solid var(--border);font-weight:600;font-size:0.85rem;">' + escapeHtml(v.title).substring(0, 40) + '</div>';
+    html += '<div style="padding:8px 12px;font-size:0.78rem;color:var(--text-muted);">共 ' + pc + 'P，勾选要处理的分P：</div>';
+    html += '<div style="display:flex;gap:4px;padding:0 12px 8px;">';
+    html += '<button class="btn btn-xs" onclick="multipSelectAll(\'' + v.bvid + '\',' + pc + ')">全选</button>';
+    html += '<button class="btn btn-xs" onclick="multipSelectNone(\'' + v.bvid + '\')">全不选</button>';
+    html += '<span style="font-size:0.78rem;color:var(--text-muted);margin-left:8px;">P</span><input type="number" id="mp-from" value="1" min="1" max="' + pc + '" style="width:50px;padding:2px 4px;font-size:0.78rem;">';
+    html += '<span style="font-size:0.78rem;color:var(--text-muted);">至 P</span><input type="number" id="mp-to" value="' + pc + '" min="1" max="' + pc + '" style="width:50px;padding:2px 4px;font-size:0.78rem;">';
+    html += '<button class="btn btn-xs" onclick="multipSelectRange(\'' + v.bvid + '\',' + pc + ')">选区</button></div>';
+    html += '<div id="mp-checkboxes" style="max-height:200px;overflow-y:auto;padding:0 12px 8px;display:flex;flex-wrap:wrap;gap:4px;">';
+    for (var pn = 1; pn <= pc; pn++) {
+        var checked = sel.indexOf(pn) >= 0 ? ' checked' : '';
+        html += '<label style="font-size:0.78rem;cursor:pointer;padding:2px 8px;border-radius:4px;background:var(--bg-tertiary);' + (checked ? 'border:2px solid var(--accent);' : 'border:1px solid var(--border);') + '"><input type="checkbox" class="mp-cb" value="' + pn + '"' + checked + ' onchange="multipToggle(\'' + v.bvid + '\',' + pn + ',this.checked)"> P' + pn + '</label>';
+    }
+    html += '</div>';
+    html += '<div style="padding:8px 12px;border-top:1px solid var(--border);text-align:right;">';
+    html += '<button class="btn btn-primary btn-sm" onclick="closeMultipPanel()">确认</button></div>';
+    panel.innerHTML = html;
+    panel.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--bg-secondary);border:1px solid var(--border);border-radius:12px;z-index:9998;min-width:360px;max-width:500px;box-shadow:0 8px 32px rgba(0,0,0,0.5);";
+    document.body.appendChild(panel);
+    var overlay = document.createElement("div");
+    overlay.id = "multip-overlay";
+    overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9997;";
+    overlay.addEventListener("click", closeMultipPanel);
+    document.body.appendChild(overlay);
+}
+
+function closeMultipPanel() {
+    // 检查并修正空选择
+    for (var bvid in state.videoPageSelections) {
+        var sel = state.videoPageSelections[bvid];
+        if (Array.isArray(sel) && sel.length === 0) {
+            state.videoPageSelections[bvid] = [1];
+        }
+    }
+    var panel = document.getElementById("multip-panel");
+    if (panel) panel.remove();
+    var overlay = document.getElementById("multip-overlay");
+    if (overlay) overlay.remove();
+    updateMultipButtons();
+}
+
+function multipSelectAll(bvid, pc) {
+    state.videoPageSelections[bvid] = [];
+    for (var i = 1; i <= pc; i++) state.videoPageSelections[bvid].push(i);
+    refreshMultipCheckboxes(bvid, pc);
+}
+
+function multipSelectNone(bvid) {
+    state.videoPageSelections[bvid] = [];
+    refreshMultipCheckboxes(bvid, state.videos.find(function(v){return v.bvid===bvid}).pageCount || 1);
+}
+
+function multipSelectRange(bvid, pc) {
+    var from = parseInt(document.getElementById("mp-from").value) || 1;
+    var to = parseInt(document.getElementById("mp-to").value) || pc;
+    if (from < 1) from = 1; if (to > pc) to = pc;
+    if (from > to) { var t = from; from = to; to = t; }
+    state.videoPageSelections[bvid] = [];
+    for (var i = from; i <= to; i++) state.videoPageSelections[bvid].push(i);
+    refreshMultipCheckboxes(bvid, pc);
+}
+
+function multipToggle(bvid, pn, checked) {
+    var sel = state.videoPageSelections[bvid] || [1];
+    var idx = sel.indexOf(pn);
+    if (checked && idx < 0) sel.push(pn);
+    if (!checked && idx >= 0) sel.splice(idx, 1);
+    if (sel.length === 0) sel.push(1);
+    state.videoPageSelections[bvid] = sel;
+}
+
+function refreshMultipCheckboxes(bvid, pc) {
+    var container = document.getElementById("mp-checkboxes");
+    if (!container) return;
+    var sel = state.videoPageSelections[bvid] || [1];
+    container.innerHTML = "";
+    for (var pn = 1; pn <= pc; pn++) {
+        var checked = sel.indexOf(pn) >= 0;
+        container.innerHTML += '<label style="font-size:0.78rem;cursor:pointer;padding:2px 8px;border-radius:4px;background:var(--bg-tertiary);' + (checked ? 'border:2px solid var(--accent);' : 'border:1px solid var(--border);') + '"><input type="checkbox" class="mp-cb" value="' + pn + '"' + (checked ? ' checked' : '') + ' onchange="multipToggle(\'' + bvid + '\',' + pn + ',this.checked)"> P' + pn + '</label>';
+    }
 }
 
 function isMultiPVideo(bvid) {
@@ -836,6 +993,109 @@ function isMultiPVideo(bvid) {
         if (state.videos[i].bvid === bvid) return (state.videos[i].pageCount || 1) > 1;
     }
     return false;
+}
+
+var multipCache = { _detected: {}, _processed: {} };
+
+async function loadMultipCache() {
+    try {
+        var od = outputDirInput.value.trim() || "./output";
+        var res = await fetch("/api/multip-cache?output_dir=" + encodeURIComponent(od));
+        var data = await res.json() || {};
+        multipCache = { _detected: data._detected || {}, _processed: data._processed || {} };
+        // 恢复已缓存的分P数
+        for (var bvid in multipCache._detected) {
+            var pc = multipCache._detected[bvid];
+            if (pc > 1) {
+                var v = state.videos.find(function (x) { return x.bvid === bvid; });
+                if (v) v.pageCount = pc;
+            }
+        }
+        // 从 checkpoint 恢复已处理的P号
+        for (var key in state.processedRecords) {
+            var rec = state.processedRecords[key];
+            var bvid2 = _bvidFromKey(key);
+            if (rec.p && !(multipCache._processed[bvid2] || []).includes(rec.p)) {
+                if (!multipCache._processed[bvid2]) multipCache._processed[bvid2] = [];
+                if (multipCache._processed[bvid2].indexOf(rec.p) < 0) {
+                    multipCache._processed[bvid2].push(rec.p);
+                }
+            }
+        }
+    } catch (e) { multipCache = { _detected: {}, _processed: {} }; }
+}
+
+async function markMultiPProcessed(bvid, pNum) {
+    if (!multipCache._processed[bvid]) multipCache._processed[bvid] = [];
+    if (multipCache._processed[bvid].indexOf(pNum) < 0) {
+        multipCache._processed[bvid].push(pNum);
+    }
+    await saveMultipCache();
+}
+
+function getMultiPStatus(bvid) {
+    var pc = multipCache._detected[bvid] || 0;
+    if (pc <= 1) return null;
+    var processed = multipCache._processed[bvid] || [];
+    if (processed.length === 0) return "unprocessed";
+    if (processed.length >= pc) return "full";
+    return "partial";
+}
+
+async function saveMultipCache() {
+    try {
+        var od = outputDirInput.value.trim() || "./output";
+        await fetch("/api/multip-cache?output_dir=" + encodeURIComponent(od), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(multipCache)
+        });
+    } catch (e) {}
+}
+
+async function detectMultiPVideos() {
+    var btn = $("detect-multip-btn");
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = "⏳ 检测中...";
+    // 先重新加载缓存确保最新
+    await loadMultipCache();
+    var total = state.videos.length;
+    var allCached = state.videos.every(function (v) { return multipCache._detected.hasOwnProperty(v.bvid); });
+    if (allCached && total > 0) {
+        var mpCached = Object.values(multipCache._detected).filter(function(pc) { return pc > 1; }).length;
+        showBanner("全部 " + total + " 个视频已检测过（其中 " + mpCached + " 个多P），无需重复检测", "success");
+        btn.textContent = "🔍 检测多P";
+        btn.disabled = false;
+        return;
+    }
+    var checked = 0;
+    var found = 0;
+    for (var i = 0; i < total; i++) {
+        var v = state.videos[i];
+        // 跳过已缓存的分P数（_detected中有记录=已查过）
+        if (multipCache._detected.hasOwnProperty(v.bvid)) { checked++; continue; }
+        btn.textContent = "⏳ " + (i + 1) + "/" + total;
+        try {
+            var res = await fetch("/api/bilibili-video-info/" + v.bvid);
+            var data = await res.json();
+            var pc = data.pageCount || 1;
+            multipCache._detected[v.bvid] = pc;
+            if (pc > 1) {
+                v.pageCount = pc;
+                found++;
+                await saveMultipCache();  // 发现多P立即保存（等待完成）
+            }
+            checked++;
+        } catch (e) { checked++; }
+        if (checked % 30 === 0) { renderVideoList(); await saveMultipCache(); }
+        await sleep(250 + Math.random() * 250);
+    }
+    await saveMultipCache();
+    btn.textContent = "🔍 检测多P";
+    btn.disabled = false;
+    showBanner("检测完成: " + checked + "/" + total + " 已查, 发现 " + found + " 个新增多P视频", found > 0 ? "success" : "warning");
+    renderVideoList();
 }
 
 // 保留旧函数签名兼容（渲染到 #video-list 直接用）
@@ -854,19 +1114,23 @@ function renderActionButtons(v, st) {
         html += '<button class="btn btn-xs btn-open-file" data-bvid="' + v.bvid + '" title="打开本地笔记文件">📂 打开笔记</button>';
         html += '<button class="btn btn-xs btn-open-folder" data-bvid="' + v.bvid + '" title="打开笔记所在文件夹">📁 文件夹</button>';
         html += '<button class="btn btn-xs btn-reprocess" data-bvid="' + v.bvid + '" title="重新处理">🔄</button>';
-        if (isAiSubtitle(v.bvid)) {
-            html += '<button class="btn btn-xs btn-force-retranscribe" data-bvid="' + v.bvid + '" title="原视频无字幕，BiliNotes用了AI匹配字幕。点击删除缓存，强制用本地模型重新转写">🔧 强制重转</button>';
-        }
+        html += '<button class="btn btn-xs btn-force-delete" data-bvid="' + v.bvid + '" title="删除BiliNote容器内该视频的缓存文件，之后可重新处理">🗑 强制删除</button>';
     } else if (st === "failed") {
         html += '<button class="btn btn-xs btn-reprocess" data-bvid="' + v.bvid + '" title="重新处理">🔄 重试</button>';
+        html += '<button class="btn btn-xs btn-force-delete" data-bvid="' + v.bvid + '" title="删除BiliNote容器内该视频的缓存文件">🗑 强制删除</button>';
     } else if ((v.pageCount || 1) > 1) {
-        // 多P视频未处理：显示P数选择器
-        var curP = state.videoPageSelections[v.bvid] || 1;
+        // 多P视频未处理：显示P数选择器 + 强制删除
+        var sel = state.videoPageSelections[v.bvid];
+        var curP = (Array.isArray(sel) ? sel[0] : sel) || 1;
         html += '<span class="p-selector">P<select class="p-sel" data-bvid="' + v.bvid + '">';
         for (var pn = 1; pn <= v.pageCount; pn++) {
             html += '<option value="' + pn + '"' + (pn === curP ? ' selected' : '') + '>' + pn + '</option>';
         }
         html += '</select></span>';
+        html += '<button class="btn btn-xs btn-force-delete" data-bvid="' + v.bvid + '" title="删除BiliNote容器内该视频的缓存文件">🗑</button>';
+    } else {
+        // 单P待处理：也提供强制删除（可能有残留缓存）
+        html += '<button class="btn btn-xs btn-force-delete" data-bvid="' + v.bvid + '" title="删除BiliNote容器内该视频的缓存文件">🗑 强制删除</button>';
     }
     return html;
 }
@@ -879,11 +1143,27 @@ function bindTableEvents() {
         });
     });
     videoList.querySelectorAll(".video-cb").forEach(function (cb) { cb.addEventListener("change", updateSelectedCount); });
+    videoList.querySelectorAll(".multip-clickable").forEach(function (badge) {
+        badge.addEventListener("click", function (e) {
+            e.stopPropagation();
+            var bvid = this.getAttribute("data-bvid");
+            var v = state.videos.find(function (x) { return x.bvid === bvid; });
+            if (v) showMultipPanel(v);
+        });
+    });
     bindActionButtons();
 }
 
 function bindCardEvents() {
     videoList.querySelectorAll(".video-cb").forEach(function (cb) { cb.addEventListener("change", updateSelectedCount); });
+    videoList.querySelectorAll(".multip-clickable").forEach(function (badge) {
+        badge.addEventListener("click", function (e) {
+            e.stopPropagation();
+            var bvid = this.getAttribute("data-bvid");
+            var v = state.videos.find(function (x) { return x.bvid === bvid; });
+            if (v) showMultipPanel(v);
+        });
+    });
     videoList.querySelectorAll(".card-tag-folder").forEach(function (tag) {
         tag.addEventListener("click", function () {
             state.folderFilter = this.getAttribute("data-folder");
@@ -953,23 +1233,35 @@ function bindActionButtons() {
     videoList.querySelectorAll(".btn-reprocess").forEach(function (btn) {
         btn.addEventListener("click", function () { reprocessVideo(btn.getAttribute("data-bvid")); });
     });
-    videoList.querySelectorAll(".btn-force-retranscribe").forEach(function (btn) {
-        btn.addEventListener("click", function () { forceRetranscribe(btn.getAttribute("data-bvid")); });
+    videoList.querySelectorAll(".btn-force-delete").forEach(function (btn) {
+        btn.addEventListener("click", function () { forceDeleteCache(btn.getAttribute("data-bvid")); });
     });
     videoList.querySelectorAll(".p-sel").forEach(function (sel) {
         sel.addEventListener("change", function () {
-            state.videoPageSelections[sel.getAttribute("data-bvid")] = parseInt(sel.value);
+            var bvid = sel.getAttribute("data-bvid");
+            state.videoPageSelections[bvid] = [parseInt(sel.value)];
         });
-        // 初始化默认值
         if (!state.videoPageSelections[sel.getAttribute("data-bvid")]) {
-            state.videoPageSelections[sel.getAttribute("data-bvid")] = 1;
+            state.videoPageSelections[sel.getAttribute("data-bvid")] = [1];
         }
     });
 }
 
-async function openLocalFolder(bvid) {
+async function openLocalFolder(bvid, pNum) {
     try {
-        var res = await fetch("/api/get-output-files/" + bvid);
+        if (!pNum) {
+            var video = state.videos.find(function (v) { return v.bvid === bvid; });
+            var pageCount = video ? (video.pageCount || 1) : 1;
+            if (pageCount > 1) {
+                var processed = _isMultiPProcessed(bvid);
+                if (processed && processed.length >= 1) {
+                    showOpenPSelector(bvid, processed, pageCount, "folder");
+                    return;
+                }
+            }
+            pNum = 1;
+        }
+        var res = await fetch("/api/get-output-files/" + bvid + "?p=" + pNum);
         var data = await res.json();
         if (!data.dir) { showBanner("未找到文件夹路径", "warning"); return; }
         var openRes = await fetch("/api/open-file?path=" + encodeURIComponent(data.dir));
@@ -978,13 +1270,31 @@ async function openLocalFolder(bvid) {
     } catch (err) { showBanner("打开文件夹失败：" + err.message, "error"); }
 }
 
-async function openLocalFile(bvid) {
+function _isMultiPProcessed(bvid) {
+    var processed = multipCache._processed[bvid] || [];
+    return processed.length > 0 ? processed : null;
+}
+
+async function openLocalFile(bvid, pNum) {
     try {
-        var res = await fetch("/api/get-output-files/" + bvid);
+        // 多P且未指定P：弹出选择器
+        if (!pNum) {
+            var video = state.videos.find(function (v) { return v.bvid === bvid; });
+            var pageCount = video ? (video.pageCount || 1) : 1;
+            if (pageCount > 1) {
+                var processed = _isMultiPProcessed(bvid);
+                if (processed && processed.length >= 1) {
+                    showOpenPSelector(bvid, processed, pageCount, "file");
+                    return;
+                }
+            }
+            pNum = 1;
+        }
+        var res = await fetch("/api/get-output-files/" + bvid + "?p=" + pNum);
         var data = await res.json();
         var files = data.files || [];
         if (files.length === 0) {
-            showBanner("未找到本地文件，可能尚未保存", "warning");
+            showBanner("未找到 P" + pNum + " 的本地文件，可能尚未保存", "warning");
             return;
         }
         var mdFile = null;
@@ -1000,19 +1310,66 @@ async function openLocalFile(bvid) {
     }
 }
 
+function showOpenPSelector(bvid, processed, pageCount, mode) {
+    closeOpenPSelector();
+    var overlay = document.createElement("div");
+    overlay.id = "openp-overlay";
+    overlay.style.cssText = "position:fixed;inset:0;z-index:9998;background:rgba(0,0,0,0.3);";
+    overlay.addEventListener("click", closeOpenPSelector);
+
+    var panel = document.createElement("div");
+    panel.id = "openp-panel";
+    panel.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:9999;background:var(--bg-primary);border:1px solid var(--border);border-radius:8px;padding:16px;min-width:320px;max-width:90vw;box-shadow:0 8px 32px rgba(0,0,0,0.3);";
+
+    var html = '<div style="font-weight:600;margin-bottom:4px;">选择要打开的分P</div>';
+    html += '<div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:12px;">共 ' + pageCount + 'P，已处理 ' + processed.length + 'P</div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;">';
+    for (var i = 0; i < processed.length; i++) {
+        var pn = processed[i];
+        html += '<button class="btn btn-sm btn-primary openp-btn" data-p="' + pn + '">P' + pn + '</button>';
+    }
+    html += '</div>';
+    html += '<button class="btn btn-sm" onclick="closeOpenPSelector()" style="width:100%;">取消</button>';
+    panel.innerHTML = html;
+
+    document.body.appendChild(overlay);
+    document.body.appendChild(panel);
+
+    panel.querySelectorAll(".openp-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            var p = parseInt(btn.getAttribute("data-p"));
+            closeOpenPSelector();
+            if (mode === "file") { openLocalFile(bvid, p); }
+            else { openLocalFolder(bvid, p); }
+        });
+    });
+}
+
+function closeOpenPSelector() {
+    var overlay = document.getElementById("openp-overlay");
+    var panel = document.getElementById("openp-panel");
+    if (overlay) overlay.remove();
+    if (panel) panel.remove();
+}
+
 async function reprocessVideo(bvid) {
     try {
         await fetch("/api/checkpoint/" + bvid, { method: "DELETE" });
         state.processedBvids.delete(bvid);
-        delete state.processedRecords[bvid];
+        var prefix = bvid + "|";
+        for (var key in state.processedRecords) {
+            if (key === bvid || key.indexOf(prefix) === 0) {
+                delete state.processedRecords[key];
+            }
+        }
         renderVideoList();
     } catch (err) {
         showBanner("清除记录失败：" + err.message, "error");
     }
 }
 
-async function forceRetranscribe(bvid) {
-    if (!confirm("该视频原本无字幕，BiliNotes使用了B站AI匹配字幕（可能不准确）。\n\n强制重新转写将：\n1. 删除BiliNotes容器内该视频的缓存文件\n2. 清除本地处理记录\n3. 之后可使用本地模型重新转写\n\n确定继续？")) {
+async function forceDeleteCache(bvid) {
+    if (!confirm("将删除 BiliNote 容器内该视频的所有缓存文件，并清除本地处理记录。\n之后可重新提交处理。\n\n确定继续？")) {
         return;
     }
     try {
@@ -1028,7 +1385,17 @@ async function forceRetranscribe(bvid) {
                 : "";
             showBanner("✅ 已删除缓存" + cacheInfo + "，视频已回到待处理状态，可重新处理", "success");
             state.processedBvids.delete(bvid);
-            delete state.processedRecords[bvid];
+            var prefix = bvid + "|";
+            for (var key in state.processedRecords) {
+                if (key === bvid || key.indexOf(prefix) === 0) {
+                    delete state.processedRecords[key];
+                }
+            }
+            // 同时清除 multipCache 中该视频的已处理记录
+            if (multipCache._processed[bvid]) {
+                delete multipCache._processed[bvid];
+                saveMultipCache();
+            }
             renderVideoList();
         } else {
             showBanner("操作失败：" + (data.error || "未知错误"), "error");
@@ -1038,8 +1405,13 @@ async function forceRetranscribe(bvid) {
     }
 }
 
-function showBanner(m, t) { banner.textContent = m; banner.className = "banner banner-" + (t || "warning"); }
-function hideBanner() { banner.className = "banner hidden"; }
+var _bannerTimer = null;
+function showBanner(m, t) {
+    banner.textContent = m; banner.className = "banner banner-" + (t || "warning");
+    if (_bannerTimer) clearTimeout(_bannerTimer);
+    _bannerTimer = setTimeout(hideBanner, 15000);
+}
+function hideBanner() { banner.className = "banner hidden"; if (_bannerTimer) { clearTimeout(_bannerTimer); _bannerTimer = null; } }
 function escapeHtml(s) { var d = document.createElement("div"); d.appendChild(document.createTextNode(s)); return d.innerHTML; }
 
 function sleep(ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); }
@@ -1063,25 +1435,35 @@ async function backfillTranscriptSource() {
     } catch (err) {}
 }
 
+function _bvidFromKey(key) {
+    var idx = key.lastIndexOf("|");
+    return idx > 0 ? key.substring(0, idx) : key;
+}
+
 async function loadCheckpoint() {
     try {
         var res = await fetch("/api/checkpoint"); var data = await res.json();
         state.processedRecords = data.records || {};
         state.processedBvids = new Set();
         var needBackfill = false;
-        for (var bvid in state.processedRecords) {
-            if (state.processedRecords[bvid].status === "SUCCESS") {
-                state.processedBvids.add(bvid);
+        for (var key in state.processedRecords) {
+            var rec = state.processedRecords[key];
+            if (rec.status === "SUCCESS") {
+                state.processedBvids.add(_bvidFromKey(key));
             }
-            if (state.processedRecords[bvid].status === "SUCCESS" && !state.processedRecords[bvid].transcript_source) {
+            if (rec.status === "SUCCESS" && !rec.transcript_source) {
                 needBackfill = true;
             }
         }
         // 如果还没有导入文件，从 checkpoint 记录构建视频列表
         if (!state.videos || state.videos.length === 0) {
+            var seenBvids = {};
             var checkpointVideos = [];
-            for (var bvid in state.processedRecords) {
-                var rec = state.processedRecords[bvid];
+            for (var key in state.processedRecords) {
+                var bvid = _bvidFromKey(key);
+                if (seenBvids[bvid]) continue;
+                seenBvids[bvid] = true;
+                var rec = state.processedRecords[key];
                 checkpointVideos.push({
                     bvid: bvid,
                     title: rec.title || "",
@@ -1108,7 +1490,117 @@ async function loadCheckpoint() {
     }
 }
 
-function updateButtons() { startBtn.disabled = state.running; startSelectedBtn.disabled = state.running || getSelectedBvids().length === 0; stopBtn.disabled = !state.running; }
+function updateButtons() {
+    startBtn.disabled = state.running;
+    startSelectedBtn.disabled = state.running || getSelectedBvids().length === 0;
+    // 选中含多P时禁用单P按钮
+    var selBvids = getSelectedBvids();
+    if (selBvids.length > 0) {
+        var hasMultiP = selBvids.some(function (bvid) {
+            var v = state.videos.find(function (x) { return x.bvid === bvid; });
+            return v && (v.pageCount || 1) > 1;
+        });
+        var hasSingleP = selBvids.some(function (bvid) {
+            var v = state.videos.find(function (x) { return x.bvid === bvid; });
+            return v && (v.pageCount || 1) <= 1;
+        });
+        startSelectedBtn.disabled = state.running || !hasSingleP;
+    }
+    stopBtn.disabled = !state.running;
+    updateMultipButtons();
+}
+
+function updateMultipButtons() {
+    var mpUnprocessed = 0;
+    for (var i = 0; i < state.videos.length; i++) {
+        if ((state.videos[i].pageCount || 1) > 1 && getMultiPStatus(state.videos[i].bvid) !== "full") mpUnprocessed++;
+    }
+    var btnAll = $("start-multip-all-btn");
+    var btnSel = $("start-multip-selected-btn");
+    if (btnAll) btnAll.disabled = state.running || mpUnprocessed === 0;
+    if (btnSel) {
+        var selBvids = getSelectedBvids();
+        var selHasMultiP = selBvids.some(function (bvid) {
+            var v = state.videos.find(function (x) { return x.bvid === bvid; });
+            return v && (v.pageCount || 1) > 1;
+        });
+        btnSel.disabled = state.running || mpUnprocessed === 0 || !selHasMultiP;
+    }
+}
+
+async function startMultipBatch(selectedOnly) {
+    if (state.running) return;
+    if (!providerSelect.value) { showBanner("请先选择供应商和模型", "warning"); return; }
+    if (!modelSelect.value) { showBanner("请先选择模型", "warning"); return; }
+    saveConfig();
+
+    var batch;
+    if (selectedOnly) {
+        var selBvids = new Set(getSelectedBvids());
+        batch = state.videos.filter(function (v) { return selBvids.has(v.bvid) && (v.pageCount || 1) > 1; });
+    } else {
+        batch = state.videos.filter(function (v) { return (v.pageCount || 1) > 1 && getMultiPStatus(v.bvid) !== "full"; });
+    }
+    if (batch.length === 0) { showBanner("没有多P视频需要处理", "warning"); return; }
+
+    // 计算总任务数（剔除已处理的分P）
+    var allTasks = [];
+    var rawTotal = 0;
+    for (var i = 0; i < batch.length; i++) {
+        var sel = state.videoPageSelections[batch[i].bvid] || [1];
+        rawTotal += sel.length;
+        for (var j = 0; j < sel.length; j++) {
+            var pn = sel[j];
+            var done = multipCache._processed[batch[i].bvid] || [];
+            if (done.indexOf(pn) < 0) {
+                allTasks.push({ video: batch[i], pNum: pn });
+            }
+        }
+    }
+    var totalTasks = allTasks.length;
+    if (totalTasks === 0) { showBanner("所选分P已全部处理完毕", "warning"); return; }
+    var skippedCount = rawTotal - totalTasks;
+
+    state.running = true; state.stopRequested = false; state.currentIndex = 0;
+    state.stats = { total: totalTasks, success: 0, failed: 0, skipped: 0 };
+    state.outputDir = outputDirInput.value.trim() || "./output";
+
+    progressSection.style.display = "block"; logArea.innerHTML = "";
+    updateButtons(); updateProgress();
+    if (skippedCount > 0) addLog("已跳过 " + skippedCount + " 个已处理分P", "skip");
+    addLog("多P批量处理开始 — " + batch.length + " 个视频, " + totalTasks + " 个分P任务", "info");
+
+    var processed = 0;
+    for (var ti = 0; ti < allTasks.length; ti++) {
+        state.currentIndex = processed;
+        if (!state.running || state.stopRequested) break;
+        var task = allTasks[ti];
+        var video = task.video;
+        var pNum = task.pNum;
+        addLog("[" + (processed + 1) + "/" + totalTasks + "] " + video.title + " (P" + pNum + ")", "info");
+        try {
+            var taskId = await submitVideo(video, pNum);
+            addLog("  → 已提交, task_id: " + taskId.substring(0, 8) + "...", "info");
+            var result = await pollTaskStatus(taskId, 900000);
+            if (result.status === "SUCCESS") {
+                addLog("  ✓ P" + pNum + " 完成", "success");
+                state.processedBvids.add(video.bvid);
+                await markMultiPProcessed(video.bvid, pNum);
+                state.processedRecords[video.bvid + "|" + pNum] = { status: "SUCCESS", task_id: taskId, time: new Date().toISOString(), transcript_source: result.transcript_source || "", p: pNum };
+                state.stats.success++;
+            } else {
+                addLog("  ✗ P" + pNum + " 失败", "error");
+                state.stats.failed++;
+            }
+        } catch (err) { addLog("  ✗ P" + pNum + " 错误: " + err.message, "error"); state.stats.failed++; }
+        processed++;
+        updateProgress(); renderVideoList();
+        if (ti < allTasks.length - 1 && state.running && !state.stopRequested) await sleep(3000);
+    }
+
+    state.running = false; updateButtons(); renderVideoList();
+    addLog("多P批量处理结束 — ✓ " + state.stats.success + " ✗ " + state.stats.failed, "info");
+}
 
 function updateProgress() {
     var done = state.stats.success + state.stats.failed + state.stats.skipped;
@@ -1237,28 +1729,34 @@ async function startBatch(selectedOnly) {
 
         if (state.processedBvids.has(video.bvid)) {
             addLog("[" + (i + 1) + "/" + batch.length + "] 跳过已处理: " + video.title, "skip");
-            state.stats.skipped++; processed++; continue;
+            state.stats.skipped++; processed++; updateProgress(); continue;
+        }
+        if ((video.pageCount || 1) > 1) {
+            addLog("[" + (i + 1) + "/" + batch.length + "] 跳过多P视频: " + video.title, "skip");
+            state.stats.skipped++; processed++; updateProgress(); continue;
         }
 
         addLog("[" + (i + 1) + "/" + batch.length + "] " + video.title + " (" + video.bvid + ")", "info");
         try {
-            var pNum = state.videoPageSelections[video.bvid] || 1;
+            var sel = state.videoPageSelections[video.bvid];
+            var pNum = (Array.isArray(sel) ? sel[0] : sel) || 1;
             var taskId = await submitVideo(video, pNum);
             addLog("  → 已提交 BiliNote, task_id: " + taskId.substring(0, 8) + "...", "info");
             var result = await pollTaskStatus(taskId, 900000);
             if (result.status === "SUCCESS") {
                 addLog("  ✓ 完成: " + video.title + " — BiliNote 可查看", "success");
                 state.processedBvids.add(video.bvid);
+                if ((video.pageCount || 1) > 1) await markMultiPProcessed(video.bvid, pNum);
                 var ts = result.transcript_source || "";
-                state.processedRecords[video.bvid] = { status: "SUCCESS", task_id: taskId, time: new Date().toISOString(), transcript_source: ts };
+                state.processedRecords[video.bvid + "|" + pNum] = { status: "SUCCESS", task_id: taskId, time: new Date().toISOString(), transcript_source: ts, p: pNum };
                 state.stats.success++;
             } else {
                 var errMsg = result.error || result.msg || "未知错误";
                 addLog("  ✗ 失败: " + video.title + " — " + errMsg, "error");
-                state.processedRecords[video.bvid] = { status: "FAILED", task_id: taskId, time: new Date().toISOString() };
+                state.processedRecords[video.bvid + "|" + pNum] = { status: "FAILED", task_id: taskId, time: new Date().toISOString(), p: pNum };
                 state.stats.failed++;
             }
-        } catch (err) { addLog("  ✗ 错误: " + video.title + " - " + err.message, "error"); state.processedRecords[video.bvid] = { status: "FAILED", time: new Date().toISOString() }; state.stats.failed++; }
+        } catch (err) { addLog("  ✗ 错误: " + video.title + " - " + err.message, "error"); state.processedRecords[video.bvid + "|" + pNum] = { status: "FAILED", time: new Date().toISOString(), p: pNum }; state.stats.failed++; }
         processed++; updateProgress(); renderVideoList();
         if (i < batch.length - 1 && state.running && !state.stopRequested) await sleep(3000);
     }

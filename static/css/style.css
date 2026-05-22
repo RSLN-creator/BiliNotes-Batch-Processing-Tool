@@ -451,6 +451,9 @@ h2:hover .md-anchor, h3:hover .md-anchor, h4:hover .md-anchor { opacity: 1; }
 .card-cover-status.status-done { background: rgba(64,192,87,0.85); color: #fff; }
 .card-cover-status.status-failed { background: rgba(250,82,82,0.85); color: #fff; }
 .card-cover-status.status-pending { background: rgba(0,0,0,0.55); color: #ccc; }
+.card-cover-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.card-mp { margin-top: 0; }
+.status-partial { color: #f59f00; background: rgba(245,159,0,0.12); }
 
 /* ── UP主 / 多P ─────────────────────────────────────────── */
 .owner-col { width: 100px; }
@@ -465,6 +468,11 @@ h2:hover .md-anchor, h3:hover .md-anchor, h4:hover .md-anchor { opacity: 1; }
     background: rgba(230, 119, 0, 0.12);
     margin-right: 2px; vertical-align: middle;
 }
+.multip-clickable { cursor: pointer; transition: transform 0.15s; }
+.multip-clickable:hover { transform: scale(1.15); }
+.multip-badge.multip-unprocessed { background: rgba(230,119,0,0.12); color: #e67700; }
+.multip-badge.multip-partial { background: rgba(245,159,0,0.15); color: #f59f00; }
+.multip-badge.multip-full { background: rgba(64,192,87,0.12); color: var(--success); }
 .row-multip { border-left: 2px solid rgba(230, 119, 0, 0.3); }
 .card-multip { border-left-color: #e67700 !important; }
 
