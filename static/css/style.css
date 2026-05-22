@@ -155,6 +155,14 @@ textarea { resize: vertical; min-height: 36px; }
     display: flex; align-items: flex-end; gap: 20px; flex-wrap: wrap;
 }
 .output-dir-field { flex: 2; min-width: 240px; }
+.force-local-field {
+    flex: 1; min-width: 200px; padding: 8px 12px;
+    background: var(--bg-tertiary); border-radius: 8px;
+    border: 1px dashed var(--border);
+}
+.force-local-label { font-weight: 600; font-size: 0.88rem; display: flex; align-items: center; gap: 8px; }
+.force-local-label input[type="checkbox"] { width: 18px; height: 18px; }
+.field-hint { font-size: 0.72rem; color: var(--text-muted); margin-top: 2px; padding-left: 26px; display: block; }
 .input-with-btn { display: flex; gap: 8px; }
 .input-with-btn input {
     flex: 1; background: var(--bg-tertiary); color: var(--text-primary);

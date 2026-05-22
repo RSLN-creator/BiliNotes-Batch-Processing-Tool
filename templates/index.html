@@ -125,14 +125,12 @@
                     <button id="pick-dir-btn" class="btn btn-sm">浏览</button>
                 </div>
             </div>
-            <div class="opt-row" style="margin:10px 0;padding:10px 14px;background:var(--bg-tertiary);border-radius:8px;border:1px dashed var(--border);">
-                <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:0.92rem;font-weight:600;">
-                    <input type="checkbox" id="opt-force-local" style="width:20px;height:20px;cursor:pointer;">
+            <div class="field force-local-field">
+                <label class="cb-label force-local-label">
+                    <input type="checkbox" id="opt-force-local">
                     <span>🎙️ 强制本地转写</span>
                 </label>
-                <div style="margin-top:4px;font-size:0.75rem;color:var(--text-muted);padding-left:30px;">
-                    跳过B站AI字幕，下载音频后使用本地Whisper模型转写（更准确但更慢，需要GPU）
-                </div>
+                <span class="field-hint">跳过B站AI字幕，下载音频后用本地Whisper模型转写（更准更慢，需GPU）</span>
             </div>
             <div class="batch-actions">
                 <button id="start-btn" class="btn btn-primary btn-lg">▶ 处理全部待处理</button>
