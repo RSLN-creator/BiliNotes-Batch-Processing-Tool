@@ -1131,11 +1131,11 @@ function renderActionButtons(v, st) {
     if (st === "done") {
         html += '<button class="btn btn-xs btn-open-file" data-bvid="' + v.bvid + '" title="打开本地笔记文件">📂 打开笔记</button>';
         html += '<button class="btn btn-xs btn-open-folder" data-bvid="' + v.bvid + '" title="打开笔记所在文件夹">📁 文件夹</button>';
-        html += '<button class="btn btn-xs btn-reprocess" data-bvid="' + v.bvid + '" title="重新处理">🔄</button>';
-        html += '<button class="btn btn-xs btn-force-delete" data-bvid="' + v.bvid + '" title="删除BiliNote容器内该视频的缓存文件，之后可重新处理">🗑 强制删除</button>';
+        html += '<button class="btn btn-xs btn-reprocess" data-bvid="' + v.bvid + '" title="仅清处理记录，不删缓存和本地文件。重跑结果相同（复用B站字幕）。要换模型或本地转写请用🗑强制删除">🔄</button>';
+        html += '<button class="btn btn-xs btn-force-delete" data-bvid="' + v.bvid + '" title="彻底清除：删BiliNote缓存+本地笔记文件+处理记录。适合换模型、切本地转写、修复错误。与🔄不同：🔄仅清记录不删缓存，重跑结果相同">🗑 强制删除</button>';
     } else if (st === "failed") {
-        html += '<button class="btn btn-xs btn-reprocess" data-bvid="' + v.bvid + '" title="重新处理">🔄 重试</button>';
-        html += '<button class="btn btn-xs btn-force-delete" data-bvid="' + v.bvid + '" title="删除BiliNote容器内该视频的缓存文件">🗑 强制删除</button>';
+        html += '<button class="btn btn-xs btn-reprocess" data-bvid="' + v.bvid + '" title="仅清处理记录，不删缓存和本地文件。重跑结果相同（复用B站字幕）。要换模型或本地转写请用🗑强制删除">🔄 重试</button>';
+        html += '<button class="btn btn-xs btn-force-delete" data-bvid="' + v.bvid + '" title="彻底清除：删BiliNote缓存+本地笔记文件+处理记录。适合换模型、切本地转写、修复错误。与🔄不同：🔄仅清记录不删缓存，重跑结果相同">🗑 强制删除</button>';
     } else if ((v.pageCount || 1) > 1) {
         // 多P视频未处理：显示P数选择器 + 强制删除
         var sel = state.videoPageSelections[v.bvid];
@@ -1145,10 +1145,10 @@ function renderActionButtons(v, st) {
             html += '<option value="' + pn + '"' + (pn === curP ? ' selected' : '') + '>' + pn + '</option>';
         }
         html += '</select></span>';
-        html += '<button class="btn btn-xs btn-force-delete" data-bvid="' + v.bvid + '" title="删除BiliNote容器内该视频的缓存文件">🗑</button>';
+        html += '<button class="btn btn-xs btn-force-delete" data-bvid="' + v.bvid + '" title="彻底清除：删BiliNote缓存+本地笔记文件+处理记录。适合换模型、切本地转写、修复错误。与🔄不同：🔄仅清记录不删缓存，重跑结果相同">🗑</button>';
     } else {
         // 单P待处理：也提供强制删除（可能有残留缓存）
-        html += '<button class="btn btn-xs btn-force-delete" data-bvid="' + v.bvid + '" title="删除BiliNote容器内该视频的缓存文件">🗑 强制删除</button>';
+        html += '<button class="btn btn-xs btn-force-delete" data-bvid="' + v.bvid + '" title="彻底清除：删BiliNote缓存+本地笔记文件+处理记录。适合换模型、切本地转写、修复错误。与🔄不同：🔄仅清记录不删缓存，重跑结果相同">🗑 强制删除</button>';
     }
     return html;
 }
