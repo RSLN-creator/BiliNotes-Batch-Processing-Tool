@@ -1834,14 +1834,14 @@ async function syncToBilinotesDB() {
     try {
         var res = await fetch("/api/bilinotes-sync");
         var data = await res.json();
-        if (!data.script) {
+        if (!data.batches || data.batches.length === 0) {
             statusEl.textContent = "没有可同步的任务";
             btn.disabled = false;
             btn.textContent = "🔄 同步";
             return;
         }
-        showScriptInModal(data.script);
-        statusEl.textContent = "脚本已生成（" + data.count + " 条），点击下方按钮复制或直接选中文本 Ctrl+C";
+        showScriptInModal(data.batches);
+        statusEl.textContent = "共 " + data.total + " 条，分 " + data.batches.length + " 批，点击对应「复制」按钮逐批执行";
     } catch (err) {
         statusEl.textContent = "❌ 获取任务数据失败：" + err.message;
     }
