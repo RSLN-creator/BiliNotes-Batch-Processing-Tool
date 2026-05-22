@@ -101,7 +101,7 @@
                         <label class="cb-label"><input type="checkbox" id="save-md" checked> Markdown</label>
                         <label class="cb-label"><input type="checkbox" id="save-txt" checked> 原文</label>
                         <label class="cb-label"><input type="checkbox" id="save-json" checked> JSON</label>
-                        <label class="cb-label"><input type="checkbox" id="save-mindmap"> 导图</label>
+                        <label class="cb-label"><input type="checkbox" id="save-mindmap" checked> 导图</label>
                     </div>
                 </div>
                 <div class="field">
@@ -123,6 +123,15 @@
                 <div class="input-with-btn">
                     <input type="text" id="output-dir" value="./output">
                     <button id="pick-dir-btn" class="btn btn-sm">浏览</button>
+                </div>
+            </div>
+            <div class="opt-row" style="margin:10px 0;padding:10px 14px;background:var(--bg-tertiary);border-radius:8px;border:1px dashed var(--border);">
+                <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:0.92rem;font-weight:600;">
+                    <input type="checkbox" id="opt-force-local" style="width:20px;height:20px;cursor:pointer;">
+                    <span>🎙️ 强制本地转写</span>
+                </label>
+                <div style="margin-top:4px;font-size:0.75rem;color:var(--text-muted);padding-left:30px;">
+                    跳过B站AI字幕，下载音频后使用本地Whisper模型转写（更准确但更慢，需要GPU）
                 </div>
             </div>
             <div class="batch-actions">

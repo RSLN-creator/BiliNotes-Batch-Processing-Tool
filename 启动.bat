@@ -29,14 +29,14 @@ if %errorlevel% neq 0 (
 )
 
 echo [CLEAN] Checking old processes...
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8765.*LISTENING"') do (
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":18765.*LISTENING"') do (
     echo [CLEAN] Killing old process PID=%%a
     taskkill /PID %%a /F >nul 2>&1
 )
 timeout /t 1 /nobreak >nul
 
 echo [START] BiliNote Batch Tool
-echo [URL] http://localhost:8765
+echo [URL] http://localhost:18765
 echo [BiliNote] http://localhost:3015
 echo.
 echo Press Ctrl+C to stop

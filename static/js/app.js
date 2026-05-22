@@ -33,6 +33,7 @@ var transcriberSelect, whisperModelSelect;
 var fmtToc, fmtSummary, fmtScreenshot, fmtLink;
 var optVideoUnderstanding, videoInterval, gridRows, gridCols;
 var saveMd, saveTxt, saveJson, saveMindmap;
+var optForceLocal;
 var videoList, videoCount, videoToolbar;
 var banner;
 var startBtn, startSelectedBtn, stopBtn, bilinoteLinkBtn, progressBar, progressSection, logArea;
@@ -51,6 +52,7 @@ document.addEventListener("DOMContentLoaded", function () {
     optVideoUnderstanding = $("opt-video-understanding");
     videoInterval = $("video-interval"); gridRows = $("grid-rows"); gridCols = $("grid-cols");
     saveMd = $("save-md"); saveTxt = $("save-txt"); saveJson = $("save-json"); saveMindmap = $("save-mindmap");
+    optForceLocal = $("opt-force-local");
     videoList = $("video-list"); videoCount = $("video-count"); videoToolbar = $("video-toolbar");
     banner = $("banner");
     startBtn = $("start-btn"); startSelectedBtn = $("start-selected-btn"); stopBtn = $("stop-btn");
@@ -83,6 +85,7 @@ document.addEventListener("DOMContentLoaded", function () {
     saveTxt.addEventListener("change", saveConfig);
     saveJson.addEventListener("change", saveConfig);
     saveMindmap.addEventListener("change", saveConfig);
+    optForceLocal.addEventListener("change", saveConfig);
     optVideoUnderstanding.addEventListener("change", saveConfig);
     videoInterval.addEventListener("input", saveConfig);
     gridRows.addEventListener("input", saveConfig);
@@ -131,6 +134,7 @@ document.addEventListener("DOMContentLoaded", function () {
             { filter: "multi_unprocessed", label: "多P待处理" },
             { filter: "multi_partial", label: "多P部分处理" },
             { filter: "multi_full", label: "多P全处理" },
+            { filter: "local_transcribe", label: "🎙️ 本地转写" },
         ];
         mpFilters.forEach(function (f) {
             var chip = document.createElement("button");
@@ -283,6 +287,7 @@ function saveConfig() {
         video_interval: videoInterval.value,
         grid_rows: gridRows.value,
         grid_cols: gridCols.value,
+        force_local: optForceLocal.checked,
         export_dir: $("export-dir").value,
     };
     localStorage.setItem("bilinote-batch-config", JSON.stringify(cfg));
@@ -308,6 +313,7 @@ function restoreConfig() {
         if (cfg.save_txt !== undefined) saveTxt.checked = cfg.save_txt;
         if (cfg.save_json !== undefined) saveJson.checked = cfg.save_json;
         if (cfg.save_mindmap !== undefined) saveMindmap.checked = cfg.save_mindmap;
+        if (cfg.force_local) optForceLocal.checked = true;
         if (cfg.video_understanding) optVideoUnderstanding.checked = true;
         if (cfg.video_interval) videoInterval.value = cfg.video_interval;
         if (cfg.grid_rows) gridRows.value = cfg.grid_rows;
@@ -618,6 +624,16 @@ function isAiSubtitle(bvid) {
     return false;
 }
 
+function isLocalTranscribe(bvid) {
+    var prefix = bvid + "|";
+    for (var key in state.processedRecords) {
+        if (key === bvid || key.indexOf(prefix) === 0) {
+            if (state.processedRecords[key].skip_subtitle) return true;
+        }
+    }
+    return false;
+}
+
 function getUniqueFolders() {
     var folders = {};
     for (var i = 0; i < state.videos.length; i++) {
@@ -653,6 +669,7 @@ function getFilteredVideos() {
         if (filter === "multi_unprocessed" && getMultiPStatus(v.bvid) !== "unprocessed") return false;
         if (filter === "multi_partial" && getMultiPStatus(v.bvid) !== "partial") return false;
         if (filter === "multi_full" && getMultiPStatus(v.bvid) !== "full") return false;
+        if (filter === "local_transcribe" && !isLocalTranscribe(v.bvid)) return false;
         if (q) return (v.bvid || "").toLowerCase().indexOf(q) !== -1 || (v.title || "").toLowerCase().indexOf(q) !== -1 || (v.ownerName || "").toLowerCase().indexOf(q) !== -1 || (v.ownerMid || "").indexOf(q) !== -1;
         return true;
     });
@@ -790,7 +807,7 @@ function renderTableViewTo(container, filtered) {
             html += '<td class="bvid">' + renderMultiPBadge(v) + escapeHtml(v.bvid) + "</td>";
             html += '<td><a href="' + v.url + '" target="_blank" rel="noopener" class="video-link" title="在 B 站打开">' + escapeHtml(v.title) + "</a></td>";
             html += '<td class="owner-cell">' + renderOwnerLink(v) + "</td>";
-            html += '<td><span class="status-badge status-' + st + '">' + statusLabel(st) + "</span>" + (isAiSubtitle(v.bvid) ? ' <span class="ai-badge">⚠️ AI匹配</span>' : "") + "</td>";
+            html += '<td><span class="status-badge status-' + st + '">' + statusLabel(st) + "</span>" + (isLocalTranscribe(v.bvid) ? ' <span class="local-badge">🎙️ 本地</span>' : "") + (isAiSubtitle(v.bvid) ? ' <span class="ai-badge">⚠️ AI匹配</span>' : "") + "</td>";
             html += '<td class="action-col">' + renderActionButtons(v, st) + "</td>";
             html += "</tr>";
         }
@@ -855,6 +872,7 @@ function renderCardViewTo(container, filtered) {
             html += '<span class="card-tag card-tag-multip multip-clickable' + mpCls + '" data-bvid="' + v.bvid + '" title="点击选择要处理的分P">' + mpLabel + '</span>';
         }
         if (aiSub) html += '<span class="card-tag card-tag-ai">⚠️ AI字幕</span>';
+        if (isLocalTranscribe(v.bvid)) html += '<span class="card-tag card-tag-local">🎙️ 本地</span>';
         html += '<span class="card-tag card-tag-folder" data-folder="' + escapeHtml(v.folder || "未分类") + '" title="点击筛选此分组">' + escapeHtml(v.folder || "未分类") + '</span>';
         if (v.description) {
             html += '<span class="card-tag card-tag-desc" data-desc="' + escapeHtml(v.description) + '" title="点击查看简介">📝 简介</span>';
@@ -1660,6 +1678,7 @@ async function submitVideo(video, pNum) {
         video_understanding: optVideoUnderstanding.checked,
         video_interval: parseInt(videoInterval.value) || 6,
         grid_size: [parseInt(gridRows.value) || 2, parseInt(gridCols.value) || 2],
+        skip_subtitle: optForceLocal.checked,
         save_options: getSaveOptions(),
         output_dir: outputDirInput.value.trim() || "./output",
         p: pNum,

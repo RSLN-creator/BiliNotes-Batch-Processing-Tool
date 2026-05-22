@@ -5,7 +5,7 @@ Set objExec = WshShell.Exec("netstat -ano")
 strOutput = objExec.StdOut.ReadAll()
 arrLines = Split(strOutput, vbCrLf)
 For Each strLine In arrLines
-    If InStr(strLine, ":8765") > 0 And InStr(strLine, "LISTENING") > 0 Then
+    If InStr(strLine, ":18765") > 0 And InStr(strLine, "LISTENING") > 0 Then
         arrParts = Split(strLine)
         strPID = arrParts(UBound(arrParts))
         On Error Resume Next

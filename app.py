@@ -13,7 +13,7 @@ from flask import Flask, jsonify, render_template, request
 
 # ── 配置常量 ──────────────────────────────────────────────
 BILINOTE_BASE_URL = os.getenv("BILINOTE_URL", "http://localhost:3015")
-GUI_PORT = int(os.getenv("GUI_PORT", "8765"))
+GUI_PORT = int(os.getenv("GUI_PORT", "18765"))
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "./output"))
 _CHECKPOINT_FILE = "_已处理.json"
 
@@ -245,6 +245,8 @@ def process_video():
     }
     if data.get("extras"):
         params["extras"] = data["extras"]
+    if data.get("skip_subtitle"):
+        params["skip_subtitle"] = True
 
     try:
         resp = requests.post(
@@ -265,6 +267,7 @@ def process_video():
             "ownerMid": data.get("ownerMid", ""),
             "pageCount": data.get("pageCount", 1),
             "description": data.get("description", ""),
+            "skip_subtitle": data.get("skip_subtitle", False),
         }
         return jsonify({"task_id": task_id})
     except requests.RequestException as e:
@@ -319,6 +322,7 @@ def task_status(task_id):
                 ownerMid=ctx.get("ownerMid", ""),
                 pageCount=ctx.get("pageCount", 1),
                 description=ctx.get("description", ""),
+                skip_subtitle=ctx.get("skip_subtitle", False),
             )
         except Exception as e:
             app.logger.error("保存文件失败: %s", e)
@@ -929,7 +933,7 @@ def load_checkpoint(output_dir=None):
             need_save = True
     # 补全缺失字段
     for key, rec in new_records.items():
-        for fld, default in [("p", 1), ("cover", ""), ("ownerName", ""), ("ownerMid", ""), ("pageCount", 1), ("description", "")]:
+        for fld, default in [("p", 1), ("cover", ""), ("ownerName", ""), ("ownerMid", ""), ("pageCount", 1), ("description", ""), ("skip_subtitle", False)]:
             if fld not in rec:
                 rec[fld] = default
                 need_save = True
@@ -938,7 +942,7 @@ def load_checkpoint(output_dir=None):
     return new_records
 
 
-def update_checkpoint(bvid, status, task_id, output_dir=None, folder="", title="", transcript_source="", p_num=1, cover="", ownerName="", ownerMid="", pageCount=1, description=""):
+def update_checkpoint(bvid, status, task_id, output_dir=None, folder="", title="", transcript_source="", p_num=1, cover="", ownerName="", ownerMid="", pageCount=1, description="", skip_subtitle=False):
     actual_output_dir = str(output_dir) if output_dir else str(OUTPUT_DIR)
     records = load_checkpoint()
     key = _ckey(bvid, p_num)
@@ -956,6 +960,7 @@ def update_checkpoint(bvid, status, task_id, output_dir=None, folder="", title="
         "ownerMid": str(ownerMid or ""),
         "pageCount": int(pageCount or 1),
         "description": description or "",
+        "skip_subtitle": skip_subtitle or False,
     }
     _save_checkpoint_file(records)
 
