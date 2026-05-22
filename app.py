@@ -537,14 +537,18 @@ def get_output_files(bvid):
             if f.is_file() and not f.name.startswith("_"):
                 files.append({"name": f.name, "path": str(f.resolve())})
     if not files and output_dir.exists():
-        for d in output_dir.rglob(bvid + "*"):
-            if d.is_dir():
-                for f in d.iterdir():
-                    if f.is_file() and not f.name.startswith("_"):
-                        files.append({"name": f.name, "path": str(f.resolve())})
-                if files:
-                    dest_dir = d
-                    break
+        candidates = [d for d in output_dir.rglob(bvid + "*") if d.is_dir()]
+        if p_num == 1:
+            found = next((d for d in candidates if " - P" not in d.name), None)
+        else:
+            found = next((d for d in candidates if d.name.endswith(p_suffix)), None)
+        if not found and candidates:
+            found = candidates[0]
+        if found:
+            for f in found.iterdir():
+                if f.is_file() and not f.name.startswith("_"):
+                    files.append({"name": f.name, "path": str(f.resolve())})
+            dest_dir = found
     return jsonify({"files": files, "dir": str(dest_dir.resolve()) if dest_dir.exists() else "", "p": p_num})
 
 
@@ -1018,16 +1022,17 @@ def copy_files():
             src_dir_name = f"{bvid} - {safe_title}{p_suffix}"
             src_dir = rec_output_dir / safe_folder / src_dir_name
             if not src_dir.exists() and rec_output_dir.exists():
-                found = None
-                for d in rec_output_dir.rglob(bvid + "*"):
-                    if d.is_dir() and d.name.endswith(p_suffix):
-                        found = d
-                        break
-                if not found:
-                    for d in rec_output_dir.rglob(bvid + "*"):
-                        if d.is_dir():
-                            found = d
-                            break
+                # rglob 搜该 bvid 的所有目录，按 P 后缀精确匹配
+                candidates = [d for d in rec_output_dir.rglob(bvid + "*") if d.is_dir()]
+                if p_num == 1:
+                    # P1: 找不含 " - P" 的目录（没有分P后缀的）
+                    found = next((d for d in candidates if " - P" not in d.name), None)
+                else:
+                    # P>1: 找以 " - P{n}" 结尾的目录
+                    found = next((d for d in candidates if d.name.endswith(p_suffix)), None)
+                # 兜底：取第一个候选
+                if not found and candidates:
+                    found = candidates[0]
                 src_dir = found if found else src_dir
             if not src_dir.exists():
                 continue
