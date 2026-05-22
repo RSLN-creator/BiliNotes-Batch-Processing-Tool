@@ -1604,7 +1604,7 @@ async function startMultipBatch(selectedOnly) {
                 addLog("  ✓ P" + pNum + " 完成", "success");
                 state.processedBvids.add(video.bvid);
                 await markMultiPProcessed(video.bvid, pNum);
-                state.processedRecords[video.bvid + "|" + pNum] = { status: "SUCCESS", task_id: taskId, time: new Date().toISOString(), transcript_source: result.transcript_source || "", p: pNum };
+                state.processedRecords[video.bvid + "|" + pNum] = { status: "SUCCESS", task_id: taskId, time: new Date().toISOString(), transcript_source: result.transcript_source || "", p: pNum, skip_subtitle: optForceLocal.checked };
                 state.stats.success++;
             } else {
                 addLog("  ✗ P" + pNum + " 失败", "error");
@@ -1767,15 +1767,15 @@ async function startBatch(selectedOnly) {
                 state.processedBvids.add(video.bvid);
                 if ((video.pageCount || 1) > 1) await markMultiPProcessed(video.bvid, pNum);
                 var ts = result.transcript_source || "";
-                state.processedRecords[video.bvid + "|" + pNum] = { status: "SUCCESS", task_id: taskId, time: new Date().toISOString(), transcript_source: ts, p: pNum };
+                state.processedRecords[video.bvid + "|" + pNum] = { status: "SUCCESS", task_id: taskId, time: new Date().toISOString(), transcript_source: ts, p: pNum, skip_subtitle: optForceLocal.checked };
                 state.stats.success++;
             } else {
                 var errMsg = result.error || result.msg || "未知错误";
                 addLog("  ✗ 失败: " + video.title + " — " + errMsg, "error");
-                state.processedRecords[video.bvid + "|" + pNum] = { status: "FAILED", task_id: taskId, time: new Date().toISOString(), p: pNum };
+                state.processedRecords[video.bvid + "|" + pNum] = { status: "FAILED", task_id: taskId, time: new Date().toISOString(), p: pNum, skip_subtitle: optForceLocal.checked };
                 state.stats.failed++;
             }
-        } catch (err) { addLog("  ✗ 错误: " + video.title + " - " + err.message, "error"); state.processedRecords[video.bvid + "|" + pNum] = { status: "FAILED", time: new Date().toISOString(), p: pNum }; state.stats.failed++; }
+        } catch (err) { addLog("  ✗ 错误: " + video.title + " - " + err.message, "error"); state.processedRecords[video.bvid + "|" + pNum] = { status: "FAILED", time: new Date().toISOString(), p: pNum, skip_subtitle: optForceLocal.checked }; state.stats.failed++; }
         processed++; updateProgress(); renderVideoList();
         if (i < batch.length - 1 && state.running && !state.stopRequested) await sleep(3000);
     }
