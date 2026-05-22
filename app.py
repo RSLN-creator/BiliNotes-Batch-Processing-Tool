@@ -1208,14 +1208,19 @@ def bilinotes_sync():
                 existing = {{ state: {{ tasks: [], currentTaskId: null }}, version: 0 }};
             }}
 
-            const existingIds = new Set(existing.state.tasks.map(function(t) {{ return t.id; }}));
-            const toAdd = incoming.filter(function(t) {{ return !existingIds.has(t.id); }});
-            console.log('[BiliNote Sync] 已有 ' + existing.state.tasks.length + ' 条, 新增 ' + toAdd.length + ' 条');
+            // 去重：按 video_url 匹配，删除旧记录后插入新记录（解决强制删除重跑后新旧 task_id 并存问题）
+            const incomingUrls = new Set(incoming.map(function(t) {{ return t.formData && t.formData.video_url; }}));
+            existing.state.tasks = existing.state.tasks.filter(function(t) {{
+                return !incomingUrls.has(t.formData && t.formData.video_url);
+            }});
+            console.log('[BiliNote Sync] 清理后: ' + existing.state.tasks.length + ' 条, 待写入: ' + incoming.length + ' 条');
 
-            if (toAdd.length === 0) {{
+            if (incoming.length === 0) {{
                 console.log('%c[BiliNote Sync] 已是最新，无需同步', 'color: #10b981;');
                 return;
             }}
+
+            const toAdd = incoming;
 
             let done = 0;
             function writeOne(index) {{
