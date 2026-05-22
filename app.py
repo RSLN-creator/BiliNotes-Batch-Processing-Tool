@@ -1071,17 +1071,42 @@ def bilinotes_sync():
             continue
         bvid = _bvid_from_key(key)
         p_num = int(rec.get("p", 1) or 1)
+        result = {}
+        # 1) 先尝试从 BiliNote API 获取
         try:
             resp = requests.get(
                 f"{BILINOTE_BASE_URL}/api/task_status/{task_id}", timeout=5
             )
             body = resp.json()
-            if body.get("code") != 0:
-                continue
-            inner = body.get("data", {})
-            result = inner.get("result") or {}
+            if body.get("code") == 0:
+                inner = body.get("data", {})
+                result = inner.get("result") or {}
         except Exception:
-            result = {}
+            pass
+        # 2) BiliNote 缓存丢失时，从本地完整.json 读取
+        if not result or not result.get("markdown"):
+            safe_title = sanitize_filename(rec.get("title", ""), max_len=80)
+            safe_folder = sanitize_filename(rec.get("folder", "未分类"), max_len=60)
+            p_suffix = f" - P{p_num}" if p_num > 1 else ""
+            dir_name = f"{bvid} - {safe_title}{p_suffix}"
+            rec_dir = Path(rec.get("output_dir", str(OUTPUT_DIR))) / safe_folder / dir_name
+            local_json = rec_dir / "完整.json"
+            if not local_json.exists():
+                # rglob 兜底
+                candidates = [d for d in Path(rec.get("output_dir", str(OUTPUT_DIR))).rglob(bvid + "*") if d.is_dir()]
+                if p_num == 1:
+                    found = next((d for d in candidates if " - P" not in d.name), None)
+                else:
+                    found = next((d for d in candidates if d.name.endswith(p_suffix)), None)
+                if not found and candidates:
+                    found = candidates[0]
+                if found:
+                    local_json = found / "完整.json"
+            if local_json.exists():
+                try:
+                    result = json.loads(local_json.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
 
         if not result or not result.get("markdown"):
             continue
