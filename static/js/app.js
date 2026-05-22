@@ -1849,27 +1849,61 @@ async function syncToBilinotesDB() {
     btn.textContent = "🔄 同步";
 }
 
-function showScriptInModal(script) {
-    var existing = document.getElementById("sync-script-textarea");
-    if (existing) existing.remove();
+function showScriptInModal(batches) {
+    // 清理旧内容
+    document.querySelectorAll("#sync-modal .sync-batch-row").forEach(function (el) { el.remove(); });
     var existingNote = document.getElementById("sync-reminder-note");
     if (existingNote) existingNote.remove();
 
-    var ta = document.createElement("textarea");
-    ta.id = "sync-script-textarea";
-    ta.value = script;
-    ta.readOnly = true;
-    ta.style.cssText = "width:100%;height:160px;padding:10px;border:1px solid var(--border-color, #333);border-radius:6px;background:rgba(0,0,0,0.2);color:var(--text-main, #fff);font-family:monospace;font-size:11px;resize:vertical;margin-top:8px;";
-    ta.addEventListener("click", function () { this.select(); });
+    var container = document.createElement("div");
+    container.id = "sync-batches-container";
+    container.style.cssText = "margin-top:8px;max-height:50vh;overflow-y:auto;";
+
+    for (var i = 0; i < batches.length; i++) {
+        var b = batches[i];
+        var row = document.createElement("div");
+        row.className = "sync-batch-row";
+        row.style.cssText = "margin-bottom:12px;border:1px solid var(--border);border-radius:6px;padding:10px;background:var(--bg-tertiary);";
+
+        var header = document.createElement("div");
+        header.style.cssText = "display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;";
+        header.innerHTML = '<strong style="font-size:0.9rem;">' + b.label + '</strong>';
+
+        var copyBtn = document.createElement("button");
+        copyBtn.className = "btn btn-primary btn-sm";
+        copyBtn.textContent = "📋 复制";
+        copyBtn.setAttribute("data-batch", i);
+        copyBtn.addEventListener("click", function () {
+            var idx = parseInt(this.getAttribute("data-batch"));
+            var ta = document.getElementById("sync-script-" + idx);
+            if (ta) {
+                ta.select();
+                document.execCommand("copy");
+                $("sync-status").textContent = "✅ 已复制 " + batches[idx].label + "！请到 BiliNotes 控制台 (F12→Console) 粘贴执行";
+            }
+        });
+        header.appendChild(copyBtn);
+        row.appendChild(header);
+
+        var ta = document.createElement("textarea");
+        ta.id = "sync-script-" + i;
+        ta.value = b.script;
+        ta.readOnly = true;
+        ta.style.cssText = "width:100%;height:80px;padding:8px;border:1px solid var(--border);border-radius:4px;background:rgba(0,0,0,0.2);color:var(--text-primary);font-family:monospace;font-size:10px;resize:vertical;";
+        ta.addEventListener("click", function () { this.select(); });
+        row.appendChild(ta);
+
+        container.appendChild(row);
+    }
 
     var note = document.createElement("p");
     note.id = "sync-reminder-note";
-    note.style.cssText = "color:#f59e0b;font-size:13px;margin-top:8px;";
-    note.innerHTML = '<strong>⚠️ 提醒：</strong>在 BiliNotes 控制台粘贴执行后，请 <strong>手动刷新页面 (F5)</strong> 即可在历史列表中看到同步的任务。';
+    note.style.cssText = "color:#f59e0b;font-size:13px;margin-top:8px;margin-bottom:4px;";
+    note.innerHTML = '<strong>⚠️ 提醒：</strong>按顺序逐批执行（每批独立粘贴到 BiliNotes 控制台）。<strong>最后一批执行完请手动刷新页面 (F5)</strong>。';
 
     var footer = document.querySelector("#sync-modal .sync-actions");
     if (footer) {
-        footer.parentNode.insertBefore(ta, footer);
+        footer.parentNode.insertBefore(container, footer);
         footer.parentNode.insertBefore(note, footer);
     }
 }
@@ -1877,8 +1911,9 @@ function showScriptInModal(script) {
 function openSyncModal() {
     $("sync-modal").classList.remove("hidden");
     $("sync-status").textContent = "";
-    var existing = document.getElementById("sync-script-textarea");
-    if (existing) existing.remove();
+    document.querySelectorAll("#sync-modal .sync-batch-row").forEach(function (el) { el.remove(); });
+    var existingContainer = document.getElementById("sync-batches-container");
+    if (existingContainer) existingContainer.remove();
     var existingNote = document.getElementById("sync-reminder-note");
     if (existingNote) existingNote.remove();
 }
@@ -1990,37 +2025,24 @@ function inlineMarkdown(text) {
 
 async function copySyncScript() {
     var statusEl = $("sync-status");
-    var existingTa = document.getElementById("sync-script-textarea");
-    // 如果文本框已有脚本内容，直接复制
-    if (existingTa && existingTa.value) {
-        existingTa.select();
-        try {
-            document.execCommand("copy");
-            statusEl.textContent = "✅ 已复制！请到 BiliNotes 控制台 (F12→Console) 粘贴执行";
-        } catch (e) {
-            statusEl.textContent = "⚠️ 复制失败，请手动 Ctrl+C 复制上方文本";
-        }
-        return;
-    }
-    // 否则先获取脚本
     statusEl.textContent = "正在生成注入脚本...";
     try {
         var res = await fetch("/api/bilinotes-sync");
         var data = await res.json();
-        if (!data.script) {
+        if (!data.batches || data.batches.length === 0) {
             statusEl.textContent = "没有可同步的任务";
             return;
         }
-        showScriptInModal(data.script);
-        // 重新获取刚插入的 textarea 并选中复制
-        var ta = document.getElementById("sync-script-textarea");
-        if (ta) {
-            ta.select();
+        showScriptInModal(data.batches);
+        // 自动复制第一份
+        var firstTa = document.getElementById("sync-script-0");
+        if (firstTa) {
+            firstTa.select();
             try {
                 document.execCommand("copy");
-                statusEl.textContent = "✅ 已复制 " + data.count + " 条！请到 BiliNotes 控制台 (F12→Console) 粘贴执行";
+                statusEl.textContent = "✅ 已复制第 1 份（共 " + data.batches.length + " 份，" + data.total + " 条）！请到 BiliNotes 控制台 (F12→Console) 粘贴执行";
             } catch (e) {
-                statusEl.textContent = "⚠️ 复制失败，请手动 Ctrl+C 复制上方文本";
+                statusEl.textContent = "⚠️ 复制失败，请点击对应批次的「复制」按钮";
             }
         }
     } catch (err) {

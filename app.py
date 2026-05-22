@@ -1134,13 +1134,20 @@ def bilinotes_sync():
         }
         tasks.append(task)
 
-    # ── 服务端生成注入脚本：数据直接嵌入，按原版可靠结构写入 IndexedDB ──
-    tasks_json_str = json.dumps(tasks, ensure_ascii=False)
+    if not tasks:
+        return jsonify({"batches": [], "total": 0})
 
-    injection_script = f"""
+    # ── 分批次（每批200条），每批独立注入脚本 ──
+    BATCH_SIZE = 200
+    batches = []
+    for batch_idx in range(0, len(tasks), BATCH_SIZE):
+        chunk = tasks[batch_idx:batch_idx + BATCH_SIZE]
+        chunk_json = json.dumps(chunk, ensure_ascii=False)
+        batch_label = f"批次 {batch_idx // BATCH_SIZE + 1}/{(len(tasks) - 1) // BATCH_SIZE + 1}（{len(chunk)} 条）"
+        script = f"""
 (async function() {{
-    console.log('%c[BiliNote Sync] 开始同步...', 'color: #3b82f6; font-weight: bold; font-size: 14px;');
-    const payload = {repr(tasks_json_str)};
+    console.log('%c[BiliNote Sync] {batch_label} 开始同步...', 'color: #3b82f6; font-weight: bold; font-size: 14px;');
+    const payload = {repr(chunk_json)};
     const incoming = JSON.parse(payload);
     if (!incoming || incoming.length === 0) {{
         console.warn('[BiliNote Sync] 无待同步数据');
@@ -1185,13 +1192,11 @@ def bilinotes_sync():
                 return;
             }}
 
-            // 逐条写入，每条独立事务（避免大批量事务超时/锁冲突）
             let done = 0;
             function writeOne(index) {{
                 if (index >= toAdd.length) {{
-                    console.log('%c[BiliNote Sync] 同步完成！共写入 ' + done + ' 条', 'color: #10b981; font-weight: bold; font-size: 14px;');
-                    console.log('%c[BiliNote Sync] 即将刷新页面...', 'color: #f59e0b;');
-                    setTimeout(function() {{ window.location.reload(); }}, 600);
+                    console.log('%c[BiliNote Sync] {batch_label} 完成！共写入 ' + done + ' 条', 'color: #10b981; font-weight: bold; font-size: 14px;');
+                    console.log('%c[BiliNote Sync] 批次完成，请继续执行下一批次（如有）或手动刷新页面', 'color: #f59e0b;');
                     return;
                 }}
                 const task = toAdd[index];
@@ -1214,7 +1219,6 @@ def bilinotes_sync():
 
                 tx.onerror = function(err) {{
                     console.error('[BiliNote Sync] 写入失败 (#' + index + '):', err);
-                    // 回滚 unshift，继续下一条
                     existing.state.tasks.shift();
                     setTimeout(function() {{ writeOne(index + 1); }}, 15);
                 }};
@@ -1228,12 +1232,10 @@ def bilinotes_sync():
         }};
     }};
 }})();
-    """
+        """.strip()
+        batches.append({"label": batch_label, "script": script, "count": len(chunk)})
 
-    return jsonify({
-        "script": injection_script.strip(),
-        "count": len(tasks)
-    })
+    return jsonify({"batches": batches, "total": len(tasks)})
 
 
 # ── 启动入口 ──────────────────────────────────────────────
