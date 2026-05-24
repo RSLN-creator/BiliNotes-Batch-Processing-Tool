@@ -86,6 +86,33 @@ def bilinote_health():
     except requests.RequestException:
         return jsonify({"alive": False})
 
+@app.route("/api/bilinote-task-alive/<task_id>")
+def bilinote_task_alive(task_id):
+    """检查 BiliNote 中指定任务是否仍在运行（状态文件是否近期有更新）"""
+    import time
+    try:
+        proc = subprocess.run(
+            ["docker", "exec", "bilinote-backend", "sh", "-c",
+             f"stat /app/note_results/{task_id}.status.json"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if proc.returncode != 0:
+            # 状态文件不存在 → 任务可能尚未开始或已被清理
+            return jsonify({"alive": False, "reason": "status_file_missing"})
+        # 解析 stat 输出获取修改时间（格式: Modify: 2024-01-01 12:00:00.000000000 +0000）
+        import re
+        mtime_match = re.search(r"Modify:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})", proc.stdout)
+        if mtime_match:
+            mtime_str = mtime_match.group(1)
+            mtime = time.mktime(time.strptime(mtime_str, "%Y-%m-%d %H:%M:%S"))
+            now = time.time()
+            # 超过 2 分钟未更新 → 任务可能停滞
+            alive = (now - mtime) < 120
+            return jsonify({"alive": alive, "last_modified": mtime_str, "seconds_ago": int(now - mtime)})
+        return jsonify({"alive": True, "reason": "status_file_exists"})
+    except Exception as e:
+        return jsonify({"alive": False, "error": str(e)})
+
 @app.route("/api/cancel-bilinote-task/<task_id>", methods=["DELETE"])
 def cancel_bilinote_task(task_id):
     """尝试取消 BiliNote 任务（清理状态文件和输出文件）"""

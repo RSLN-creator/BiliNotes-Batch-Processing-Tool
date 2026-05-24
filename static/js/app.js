@@ -1858,18 +1858,21 @@ function pollTaskStatus(taskId, timeoutMs) {
                 if (Date.now() - startTime > timeoutMs) { clearInterval(interval); reject(new Error("任务超时")); return; }
                 if (state.stopImmediate) {
                     clearInterval(interval);
-                    // 尝试清理 BiliNote 上的任务
                     try { await fetch("/api/cancel-bilinote-task/" + taskId, { method: "DELETE" }); } catch (e) {}
                     reject(new Error("用户取消"));
                     return;
                 }
-                // 每10次轮询(30秒)检查 BiliNote 是否还活着
+                // 每10次轮询(30秒)检查 BiliNote 服务 + 任务是否还在运行
                 healthCheckCount++;
                 if (healthCheckCount % 10 === 0) {
                     try {
                         var hc = await fetch("/api/bilinote-health"); var hd = await hc.json();
                         if (!hd.alive) { clearInterval(interval); reject(new Error("BiliNote 服务崩溃，任务终止")); return; }
                     } catch (e) { clearInterval(interval); reject(new Error("BiliNote 服务不可达，任务终止")); return; }
+                    try {
+                        var ta = await fetch("/api/bilinote-task-alive/" + taskId); var tad = await ta.json();
+                        if (!tad.alive) { clearInterval(interval); reject(new Error("BiliNote 任务异常（" + (tad.reason || "状态文件丢失") + "），任务终止")); return; }
+                    } catch (e) { /* 任务存活检测失败不中断，继续轮询 */ }
                 }
                 var res = await fetch("/api/task-status/" + taskId); var data = await res.json();
                 if (data.status === "SUCCESS" || data.status === "FAILED") { clearInterval(interval); resolve(data); }
