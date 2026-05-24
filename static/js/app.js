@@ -9,6 +9,8 @@ var state = {
     models: [],
     running: false,
     stopRequested: false,
+    stopImmediate: false,
+    currentTaskId: "",
     processedBvids: new Set(),
     processedRecords: {},
     currentIndex: 0,
@@ -39,6 +41,7 @@ var banner;
 var startBtn, startSelectedBtn, stopBtn, bilinoteLinkBtn, progressBar, progressSection, logArea;
 var totalSpan, successSpan, failedSpan, skippedSpan, currentSpan;
 var outputDirInput, pickDirBtn;
+var localPathInput, pickFolderBtn, pickFilesBtn, addLocalBtn, addProcessBtn;
 var selectAllCb, searchInput, selectedCountEl, selectedCountBtn;
 var viewTableBtn, viewCardBtn;
 var themeToggle, screenshotHint, vuHint, screenshotLabel, vuLabel;
@@ -61,6 +64,9 @@ document.addEventListener("DOMContentLoaded", function () {
     totalSpan = $("stat-total"); successSpan = $("stat-success"); failedSpan = $("stat-failed");
     skippedSpan = $("stat-skipped"); currentSpan = $("stat-current");
     outputDirInput = $("output-dir"); pickDirBtn = $("pick-dir-btn");
+    localPathInput = $("local-path"); pickFolderBtn = $("pick-folder-btn");
+    pickFilesBtn = $("pick-files-btn"); addLocalBtn = $("add-local-btn");
+    addProcessBtn = $("add-process-btn");
     selectAllCb = $("select-all"); searchInput = $("search-input");
     selectedCountEl = $("selected-count"); selectedCountBtn = $("selected-count-btn");
     viewTableBtn = $("view-table"); viewCardBtn = $("view-card");
@@ -91,6 +97,10 @@ document.addEventListener("DOMContentLoaded", function () {
     gridRows.addEventListener("input", saveConfig);
     gridCols.addEventListener("input", saveConfig);
     $("export-dir").addEventListener("change", saveConfig);
+    pickFolderBtn.addEventListener("click", pickLocalFolder);
+    pickFilesBtn.addEventListener("click", pickLocalFiles);
+    addLocalBtn.addEventListener("click", addLocalVideos);
+    addProcessBtn.addEventListener("click", addAndProcessLocal);
     startBtn.addEventListener("click", function () { startBatch(false); });
     startSelectedBtn.addEventListener("click", function () { startBatch(true); });
     stopBtn.addEventListener("click", stopBatch);
@@ -224,7 +234,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
     initTheme();
     restoreConfig();
-    loadCheckpoint().then(function () { return loadMultipCache(); }).then(function () { renderVideoList(); });
+    loadLocalVideos().then(function () { loadCheckpoint().then(function () { return loadMultipCache(); }).then(function () { renderVideoList(); }); });
     loadTranscriberConfig();
     loadProviders();
     checkModelCapabilities();
@@ -351,6 +361,102 @@ async function pickOutputDir() {
             if (data.path) outputDirInput.value = data.path;
         } catch (e2) {}
     }
+}
+
+async function loadLocalVideos() {
+    try {
+        var res = await fetch("/api/local-videos"); var data = await res.json();
+        var items = data.videos || [];
+        var existingBvids = new Set(state.videos.map(function (v) { return v.bvid; }));
+        for (var i = 0; i < items.length; i++) {
+            if (!existingBvids.has(items[i].bvid)) state.videos.push(items[i]);
+        }
+    } catch (e) {}
+}
+
+async function persistLocalVideos(newVids) {
+    try {
+        await fetch("/api/local-videos", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ videos: newVids }) });
+    } catch (e) {}
+}
+
+async function pickLocalFolder() {
+    try {
+        var res = await fetch("/api/pick-local-folder"); var data = await res.json();
+        if (data.path) localPathInput.value = data.path;
+    } catch (e) {}
+}
+
+async function pickLocalFiles() {
+    try {
+        var res = await fetch("/api/pick-local-files"); var data = await res.json();
+        if (data.files && data.files.length > 0) localPathInput.value = data.files.join("; ");
+    } catch (e) {}
+}
+
+async function addLocalVideos() {
+    var rawPath = localPathInput.value.trim();
+    if (!rawPath) { showBanner("请输入本地视频路径", "warning"); return; }
+    var paths = rawPath.split(";").map(function (p) { return p.trim(); }).filter(Boolean);
+    try {
+        var res = await fetch("/api/scan-local", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths: paths }) });
+        var data = await res.json();
+        var items = data.videos || [];
+        if (items.length === 0) { showBanner("未找到视频文件（支持: mp4/mkv/webm/avi/mov/flv/wmv/m4v/ts）", "warning"); return; }
+        // 过滤掉已存在的本地视频
+        var newVideos = [];
+        var existingBvids = new Set(state.videos.map(function (v) { return v.bvid; }));
+        for (var i = 0; i < items.length; i++) {
+            if (!existingBvids.has(items[i].bvid)) newVideos.push(items[i]);
+        }
+        if (newVideos.length === 0) { showBanner("所选视频已全部在列表中", "warning"); return; }
+        // 加入视频列表
+        for (var j = 0; j < newVideos.length; j++) {
+            state.videos.push(newVideos[j]);
+        }
+        persistLocalVideos(newVideos);
+        state.statusFilter = "all"; state.currentPage = 1;
+        renderVideoList(); updateButtons();
+        localPathInput.value = "";
+        showBanner("已添加 " + newVideos.length + " 个本地视频", "success");
+    } catch (e) { showBanner("扫描本地视频失败: " + e.message, "error"); }
+}
+
+async function addAndProcessLocal() {
+    var rawPath = localPathInput.value.trim();
+    if (!rawPath) { showBanner("请输入本地视频路径", "warning"); return; }
+    var paths = rawPath.split(";").map(function (p) { return p.trim(); }).filter(Boolean);
+    try {
+        var res = await fetch("/api/scan-local", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths: paths }) });
+        var data = await res.json();
+        var items = data.videos || [];
+        if (items.length === 0) { showBanner("未找到视频文件（支持: mp4/mkv/webm/avi/mov/flv/wmv/m4v/ts）", "warning"); return; }
+        // 加入列表（去重）
+        var newBvids = [];
+        var existingBvids = new Set(state.videos.map(function (v) { return v.bvid; }));
+        for (var i = 0; i < items.length; i++) {
+            if (!existingBvids.has(items[i].bvid)) {
+                state.videos.push(items[i]);
+                newBvids.push(items[i].bvid);
+            }
+        }
+        if (newBvids.length === 0) { showBanner("所选视频已全部在列表中", "warning"); return; }
+        var addedVids = items.filter(function (v) { return newBvids.indexOf(v.bvid) >= 0; });
+        persistLocalVideos(addedVids);
+        state.statusFilter = "all"; state.currentPage = 1;
+        renderVideoList(); updateButtons();
+        localPathInput.value = "";
+        // 勾选新增的本地视频
+        var checkboxes = videoList.querySelectorAll(".video-cb");
+        for (var k = 0; k < checkboxes.length; k++) {
+            checkboxes[k].checked = (newBvids.indexOf(checkboxes[k].value) >= 0);
+        }
+        updateSelectedCount();
+        showBanner("已添加 " + newBvids.length + " 个本地视频，开始处理选中...", "success");
+        // 立即开始处理选中
+        await sleep(300);
+        startBatch(true);
+    } catch (e) { showBanner("处理失败: " + e.message, "error"); }
 }
 
 async function onFileSelected(event) {
@@ -804,8 +910,13 @@ function renderTableViewTo(container, filtered) {
             var isMultiP = (v.pageCount || 1) > 1;
             html += "<tr class='row-" + st + (isMultiP ? " row-multip" : "") + "'>";
             html += '<td class="cb-col"><input type="checkbox" class="video-cb" value="' + v.bvid + '"></td>';
-            html += '<td class="bvid">' + renderMultiPBadge(v) + escapeHtml(v.bvid) + "</td>";
-            html += '<td><a href="' + v.url + '" target="_blank" rel="noopener" class="video-link" title="在 B 站打开">' + escapeHtml(v.title) + "</a></td>";
+            var isLocal = v.platform === "local";
+            html += '<td class="bvid">' + (isLocal ? '📁 <span class="local-vid-hint">本地</span>' : renderMultiPBadge(v) + escapeHtml(v.bvid)) + "</td>";
+            if (isLocal) {
+                html += '<td><span class="video-link" title="' + escapeHtml(v.url) + '">' + escapeHtml(v.title) + "</span></td>";
+            } else {
+                html += '<td><a href="' + v.url + '" target="_blank" rel="noopener" class="video-link" title="在 B 站打开">' + escapeHtml(v.title) + "</a></td>";
+            }
             html += '<td class="owner-cell">' + renderOwnerLink(v) + "</td>";
             html += '<td><span class="status-badge status-' + st + '">' + statusLabel(st) + "</span>" + (isLocalTranscribe(v.bvid) ? ' <span class="local-badge">🎙️ 本地</span>' : "") + (isAiSubtitle(v.bvid) ? ' <span class="ai-badge">⚠️ AI匹配</span>' : "") + "</td>";
             html += '<td class="action-col">' + renderActionButtons(v, st) + "</td>";
@@ -852,7 +963,12 @@ function renderCardViewTo(container, filtered) {
             html += '</div>';
         }
         // 标题
-        html += '<a href="' + v.url + '" target="_blank" rel="noopener" class="card-title video-link" title="在 B 站打开">' + escapeHtml(v.title) + "</a>";
+        var isLocalCard = v.platform === "local";
+        if (isLocalCard) {
+            html += '<span class="card-title" title="' + escapeHtml(v.url) + '">📁 ' + escapeHtml(v.title) + "</span>";
+        } else {
+            html += '<a href="' + v.url + '" target="_blank" rel="noopener" class="card-title video-link" title="在 B 站打开">' + escapeHtml(v.title) + "</a>";
+        }
         // 标签行: UP主 · BV号 · P标签 · AI字幕 · 文件夹
         html += '<div class="card-tags">';
         if (v.ownerName) {
@@ -862,7 +978,7 @@ function renderCardViewTo(container, filtered) {
                 html += '<span class="card-tag card-tag-owner">' + escapeHtml(v.ownerName) + '</span>';
             }
         }
-        html += '<span class="card-tag card-tag-bvid">' + escapeHtml(v.bvid) + '</span>';
+        html += '<span class="card-tag card-tag-bvid">' + (v.platform === "local" ? "📁 本地" : escapeHtml(v.bvid)) + '</span>';
         if (isMultiP) {
             var mpStatus = getMultiPStatus(v.bvid);
             var mpLabel, mpCls;
@@ -1579,7 +1695,7 @@ async function startMultipBatch(selectedOnly) {
     if (totalTasks === 0) { showBanner("所选分P已全部处理完毕", "warning"); return; }
     var skippedCount = rawTotal - totalTasks;
 
-    state.running = true; state.stopRequested = false; state.currentIndex = 0;
+    state.running = true; state.stopRequested = false; state.stopImmediate = false; state.currentTaskId = ""; state.currentIndex = 0;
     state.stats = { total: totalTasks, success: 0, failed: 0, skipped: 0 };
     state.outputDir = outputDirInput.value.trim() || "./output";
 
@@ -1597,9 +1713,11 @@ async function startMultipBatch(selectedOnly) {
         var pNum = task.pNum;
         addLog("[" + (processed + 1) + "/" + totalTasks + "] " + video.title + " (P" + pNum + ")", "info");
         try {
-            var taskId = await submitVideo(video, pNum);
-            addLog("  → 已提交, task_id: " + taskId.substring(0, 8) + "...", "info");
-            var result = await pollTaskStatus(taskId, 900000);
+            var taskId = await submitVideo(video, pNum); state.currentTaskId = taskId;
+            var forceLocalHint2 = (video.platform === "local" && optForceLocal.checked) ? " (本地Whisper)" : "";
+            addLog("  → 已提交, task_id: " + taskId.substring(0, 8) + "..." + forceLocalHint2, "info");
+            var duration = await getVideoDuration(video);
+            var result = await pollTaskStatus(taskId, calcTimeout(duration));
             if (result.status === "SUCCESS") {
                 addLog("  ✓ P" + pNum + " 完成", "success");
                 state.processedBvids.add(video.bvid);
@@ -1663,13 +1781,26 @@ function normalizeVideoUrl(url, bvid) {
 async function submitVideo(video, pNum) {
     pNum = pNum || 1;
     var fmt = getFormat();
-    var baseUrl = normalizeVideoUrl(video.url, video.bvid);
-    var videoUrl = pNum > 1 ? baseUrl + "?p=" + pNum : baseUrl;
+    var platform = video.platform || "bilibili";
+    var videoUrl;
+    if (platform === "local") {
+        videoUrl = video.url;  // 本地视频直接用文件路径
+    } else {
+        var baseUrl = normalizeVideoUrl(video.url, video.bvid);
+        videoUrl = pNum > 1 ? baseUrl + "?p=" + pNum : baseUrl;
+    }
+    var transcriber = transcriberSelect.value;
+    var skipSub = optForceLocal.checked;
+    if (platform === "local" && optForceLocal.checked) {
+        transcriber = "fast-whisper";  // 本地文件强制本地Whisper，不走云端
+        skipSub = false;               // 本地文件无B站字幕可跳
+    }
     var body = {
         bvid: video.bvid, title: video.title, folder: video.folder || "未分类", url: videoUrl,
+        platform: platform,
         model_name: modelSelect.value, provider_id: providerSelect.value,
         quality: qualitySelect.value,
-        transcriber_type: transcriberSelect.value,
+        transcriber_type: transcriber,
         whisper_model_size: whisperModelSelect.value || "",
         style: styleSelect.value, extras: promptInput.value,
         format: fmt,
@@ -1678,7 +1809,7 @@ async function submitVideo(video, pNum) {
         video_understanding: optVideoUnderstanding.checked,
         video_interval: parseInt(videoInterval.value) || 6,
         grid_size: [parseInt(gridRows.value) || 2, parseInt(gridCols.value) || 2],
-        skip_subtitle: optForceLocal.checked,
+        skip_subtitle: skipSub,
         save_options: getSaveOptions(),
         output_dir: outputDirInput.value.trim() || "./output",
         p: pNum,
@@ -1695,13 +1826,51 @@ async function submitVideo(video, pNum) {
     return data.task_id;
 }
 
+async function getVideoDuration(video) {
+    try {
+        var params = [];
+        if (video.platform === "local") {
+            params.push("file_path=" + encodeURIComponent(video.url));
+        } else {
+            params.push("bvid=" + encodeURIComponent(video.bvid));
+        }
+        var res = await fetch("/api/video-duration?" + params.join("&"));
+        var data = await res.json();
+        if (data.duration_seconds > 0) return data.duration_seconds;
+    } catch (e) {}
+    return 0;  // 获取失败返回 0，调用方降级为默认超时
+}
+
+function calcTimeout(durationSeconds) {
+    if (!durationSeconds || durationSeconds <= 0) return 900000;  // 降级：15分钟
+    // 下载时间(时长/3) + 30分钟buffer，下限15分钟
+    var minutes = Math.max(15, Math.ceil(durationSeconds / 3 / 60) + 30);
+    return minutes * 60 * 1000;
+}
+
 function pollTaskStatus(taskId, timeoutMs) {
     timeoutMs = timeoutMs || 900000;
     return new Promise(function (resolve, reject) {
         var startTime = Date.now();
+        var healthCheckCount = 0;
         var interval = setInterval(async function () {
             try {
                 if (Date.now() - startTime > timeoutMs) { clearInterval(interval); reject(new Error("任务超时")); return; }
+                if (state.stopImmediate) {
+                    clearInterval(interval);
+                    // 尝试清理 BiliNote 上的任务
+                    try { await fetch("/api/cancel-bilinote-task/" + taskId, { method: "DELETE" }); } catch (e) {}
+                    reject(new Error("用户取消"));
+                    return;
+                }
+                // 每10次轮询(30秒)检查 BiliNote 是否还活着
+                healthCheckCount++;
+                if (healthCheckCount % 10 === 0) {
+                    try {
+                        var hc = await fetch("/api/bilinote-health"); var hd = await hc.json();
+                        if (!hd.alive) { clearInterval(interval); reject(new Error("BiliNote 服务崩溃，任务终止")); return; }
+                    } catch (e) { clearInterval(interval); reject(new Error("BiliNote 服务不可达，任务终止")); return; }
+                }
                 var res = await fetch("/api/task-status/" + taskId); var data = await res.json();
                 if (data.status === "SUCCESS" || data.status === "FAILED") { clearInterval(interval); resolve(data); }
             } catch (err) { clearInterval(interval); reject(err); }
@@ -1709,7 +1878,30 @@ function pollTaskStatus(taskId, timeoutMs) {
     });
 }
 
-function stopBatch() { state.stopRequested = true; addLog("用户请求停止，完成当前任务后结束...", "warning"); stopBtn.disabled = true; }
+function stopBatch() {
+    if (!state.running) return;
+    var overlay = document.createElement("div");
+    overlay.className = "stop-overlay";
+    overlay.innerHTML = '<div class="stop-dialog"><p>确定要停止吗？</p><div class="stop-dialog-btns"><button id="stop-after-btn" class="btn btn-primary">完成当前任务后停止</button><button id="stop-now-btn" class="btn btn-danger">立即停止</button><button id="stop-cancel-btn" class="btn btn-ghost">取消</button></div></div>';
+    document.body.appendChild(overlay);
+    overlay.querySelector("#stop-after-btn").onclick = function () {
+        overlay.remove();
+        state.stopRequested = true;
+        addLog("停止：完成当前任务后结束", "warning");
+        stopBtn.disabled = true;
+    };
+    overlay.querySelector("#stop-now-btn").onclick = function () {
+        overlay.remove();
+        state.stopRequested = true;
+        state.stopImmediate = true;
+        if (state.currentTaskId) {
+            fetch("/api/cancel-bilinote-task/" + state.currentTaskId, { method: "DELETE" }).catch(function(){});
+        }
+        addLog("立即停止：已中断任务并清理 BiliNote", "error");
+        stopBtn.disabled = true;
+    };
+    overlay.querySelector("#stop-cancel-btn").onclick = function () { overlay.remove(); };
+}
 
 async function startBatch(selectedOnly) {
     if (state.running) return;
@@ -1732,7 +1924,7 @@ async function startBatch(selectedOnly) {
     var willProcess = batch.length - skipCount;
     if (willProcess === 0) { showBanner("所选视频已全部处理完毕", "warning"); return; }
 
-    state.running = true; state.stopRequested = false; state.currentIndex = 0;
+    state.running = true; state.stopRequested = false; state.stopImmediate = false; state.currentTaskId = ""; state.currentIndex = 0;
     state.stats = { total: batch.length, success: 0, failed: 0, skipped: 0 };
     state.outputDir = outputDirInput.value.trim() || "./output";
 
@@ -1759,9 +1951,11 @@ async function startBatch(selectedOnly) {
         try {
             var sel = state.videoPageSelections[video.bvid];
             var pNum = (Array.isArray(sel) ? sel[0] : sel) || 1;
-            var taskId = await submitVideo(video, pNum);
-            addLog("  → 已提交 BiliNote, task_id: " + taskId.substring(0, 8) + "...", "info");
-            var result = await pollTaskStatus(taskId, 900000);
+            var taskId = await submitVideo(video, pNum); state.currentTaskId = taskId;
+            var forceLocalHint = (video.platform === "local" && optForceLocal.checked) ? " (本地Whisper)" : "";
+            addLog("  → 已提交 BiliNote, task_id: " + taskId.substring(0, 8) + "..." + forceLocalHint, "info");
+            var duration = await getVideoDuration(video);
+            var result = await pollTaskStatus(taskId, calcTimeout(duration));
             if (result.status === "SUCCESS") {
                 addLog("  ✓ 完成: " + video.title + " — BiliNote 可查看", "success");
                 state.processedBvids.add(video.bvid);

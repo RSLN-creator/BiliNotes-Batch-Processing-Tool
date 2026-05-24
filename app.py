@@ -1,4 +1,5 @@
 """BiliNote 批量收藏转写工具 — Flask GUI 后端"""
+import hashlib
 import json
 import os
 import re
@@ -16,6 +17,14 @@ BILINOTE_BASE_URL = os.getenv("BILINOTE_URL", "http://localhost:3015")
 GUI_PORT = int(os.getenv("GUI_PORT", "18765"))
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "./output"))
 _CHECKPOINT_FILE = "_已处理.json"
+_LOCAL_VIDEOS_FILE = "_本地视频.json"
+# BiliNote Docker 挂载: Windows宿主机路径 → 容器 /app
+# 本地视频需拷贝到此目录下的 uploads/，容器内路径为 /app/uploads/
+BILINOTE_HOST_DIR = os.getenv(
+    "BILINOTE_HOST_DIR",
+    r"D:\2_Download_Main\6_Bilinotes_gitclone\backend"
+)
+BILINOTE_CONTAINER_BASE = "/app"
 
 # ── 内存状态 ──────────────────────────────────────────────
 _task_map: dict = {}           # task_id -> {bvid, title, folder}
@@ -67,6 +76,28 @@ def parse_file():
 
 
 # ── BiliNote API 代理端点 ─────────────────────────────────
+
+@app.route("/api/bilinote-health")
+def bilinote_health():
+    """检查 BiliNote 服务是否存活"""
+    try:
+        resp = requests.get(f"{BILINOTE_BASE_URL}/api/sys_health", timeout=5)
+        return jsonify({"alive": resp.status_code == 200})
+    except requests.RequestException:
+        return jsonify({"alive": False})
+
+@app.route("/api/cancel-bilinote-task/<task_id>", methods=["DELETE"])
+def cancel_bilinote_task(task_id):
+    """尝试取消 BiliNote 任务（清理状态文件和输出文件）"""
+    try:
+        proc = subprocess.run(
+            ["docker", "exec", "bilinote-backend", "bash", "-c",
+             f"rm -f /app/note_results/{task_id}*.json /app/note_results/{task_id}*.md"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return jsonify({"ok": True, "task_id": task_id})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 def _bili_get(path, timeout=5):
     """调用 BiliNote GET API，返回 (connected, data_list)"""
@@ -210,6 +241,177 @@ def pick_directory():
         return jsonify({"path": None})
 
 
+@app.route("/api/pick-local-folder")
+def pick_local_folder():
+    """Windows 原生文件夹选择对话框（选择本地视频所在目录）"""
+    try:
+        ps_cmd = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "$f = New-Object System.Windows.Forms.FolderBrowserDialog; "
+            "$f.Description = '选择本地视频所在文件夹'; "
+            "$f.ShowDialog() | Out-Null; "
+            "$f.SelectedPath"
+        )
+        result = subprocess.run(
+            ["powershell", "-Command", ps_cmd],
+            capture_output=True, text=True, timeout=30,
+        )
+        path = result.stdout.strip()
+        return jsonify({"path": path if path else None})
+    except Exception:
+        return jsonify({"path": None})
+
+
+@app.route("/api/pick-local-files")
+def pick_local_files():
+    """Windows 原生多文件选择对话框"""
+    try:
+        ps_cmd = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "$f = New-Object System.Windows.Forms.OpenFileDialog; "
+            "$f.Filter = '视频文件 (*.mp4;*.mkv;*.webm;*.avi;*.mov;*.flv;*.wmv;*.m4v;*.ts)|*.mp4;*.mkv;*.webm;*.avi;*.mov;*.flv;*.wmv;*.m4v;*.ts|所有文件 (*.*)|*.*'; "
+            "$f.Multiselect = $true; "
+            "$f.Title = '选择本地视频文件'; "
+            "$f.ShowDialog() | Out-Null; "
+            "$f.FileNames -join \"`n\""
+        )
+        result = subprocess.run(
+            ["powershell", "-Command", ps_cmd],
+            capture_output=True, text=True, timeout=30,
+        )
+        lines = [l.strip() for l in result.stdout.strip().splitlines() if l.strip()]
+        return jsonify({"files": lines})
+    except Exception:
+        return jsonify({"files": []})
+
+
+VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv', '.wmv', '.m4v', '.ts', '.m2ts'}
+
+
+def _ffprobe_duration(file_path):
+    """用 ffprobe 获取本地视频时长（秒），失败返回 0"""
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(file_path)],
+            capture_output=True, text=True, timeout=15,
+        )
+        return float(proc.stdout.strip()) if proc.returncode == 0 else 0
+    except Exception:
+        return 0
+
+
+def _path_hash(path):
+    """文件路径的短hash，用作唯一ID"""
+    return hashlib.md5(path.encode()).hexdigest()[:12]
+
+
+@app.route("/api/scan-local", methods=["POST"])
+def scan_local():
+    """扫描本地路径（文件或文件夹），返回视频文件列表及元数据"""
+    data = request.get_json(silent=True) or {}
+    paths = data.get("paths", [])
+    if not paths:
+        return jsonify({"videos": []})
+
+    videos = []
+    seen = set()
+    for p in paths:
+        pp = Path(p)
+        if not pp.exists():
+            continue
+        if pp.is_file():
+            if pp.suffix.lower() in VIDEO_EXTENSIONS and str(pp) not in seen:
+                seen.add(str(pp))
+                duration = _ffprobe_duration(pp)
+                videos.append({
+                    "bvid": "local_" + _path_hash(str(pp)),
+                    "title": pp.stem,
+                    "url": str(pp),
+                    "folder": pp.parent.name,
+                    "platform": "local",
+                    "duration_seconds": duration,
+                    "pageCount": 1,
+                    "cover": "",
+                    "ownerName": "",
+                    "ownerMid": "",
+                    "description": f"本地文件: {pp.name}",
+                })
+        elif pp.is_dir():
+            for f in pp.rglob("*"):
+                if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS:
+                    fp = str(f)
+                    if fp not in seen:
+                        seen.add(fp)
+                        duration = _ffprobe_duration(f)
+                        videos.append({
+                            "bvid": "local_" + _path_hash(fp),
+                            "title": f.stem,
+                            "url": fp,
+                            "folder": pp.name,
+                            "platform": "local",
+                            "duration_seconds": duration,
+                            "pageCount": 1,
+                            "cover": "",
+                            "ownerName": "",
+                            "ownerMid": "",
+                            "description": f"本地文件: {f.name}",
+                        })
+
+    return jsonify({"videos": videos})
+
+
+def _local_videos_path():
+    return Path(OUTPUT_DIR) / _LOCAL_VIDEOS_FILE
+
+
+def _load_local_videos():
+    p = _local_videos_path()
+    if not p.exists():
+        return []
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def _save_local_videos(videos):
+    p = _local_videos_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(videos, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(str(tmp), str(p))
+
+
+@app.route("/api/local-videos", methods=["GET"])
+def get_local_videos():
+    return jsonify({"videos": _load_local_videos()})
+
+
+@app.route("/api/local-videos", methods=["POST"])
+def save_local_videos():
+    data = request.get_json(silent=True) or {}
+    incoming = data.get("videos", [])
+    if not incoming:
+        return jsonify({"ok": True, "count": 0})
+    existing = _load_local_videos()
+    existing_bvids = {v["bvid"] for v in existing}
+    for v in incoming:
+        if v.get("bvid") not in existing_bvids:
+            existing.append(v)
+    _save_local_videos(existing)
+    return jsonify({"ok": True, "count": len(existing)})
+
+
+@app.route("/api/local-videos/<bvid>", methods=["DELETE"])
+def delete_local_video(bvid):
+    existing = _load_local_videos()
+    updated = [v for v in existing if v.get("bvid") != bvid]
+    if len(updated) != len(existing):
+        _save_local_videos(updated)
+    return jsonify({"ok": True})
+
+
 # ── Phase 2: 批量处理端点 ─────────────────────────────────
 
 @app.route("/api/process-video", methods=["POST"])
@@ -231,9 +433,35 @@ def process_video():
     if not model_name or not provider_id:
         return jsonify({"error": "请先选择供应商和模型"}), 400
 
+    # 本地视频：拷贝到 BiliNote Docker 可访问的 uploads 目录，转为容器路径
+    platform = data.get("platform", "bilibili")
+    if platform == "local":
+        src_path = Path(url)
+        if not src_path.exists():
+            return jsonify({"error": f"本地文件不存在: {url}"}), 400
+        if not src_path.is_file():
+            return jsonify({"error": f"路径不是文件: {url}"}), 400
+        uploads_host = Path(BILINOTE_HOST_DIR) / "uploads"
+        uploads_host.mkdir(parents=True, exist_ok=True)
+        dest_path = uploads_host / src_path.name
+        need_copy = True
+        if dest_path.exists():
+            try:
+                if dest_path.stat().st_size == src_path.stat().st_size:
+                    need_copy = False
+            except OSError:
+                pass
+        if need_copy:
+            import shutil
+            try:
+                shutil.copy2(src_path, dest_path)
+            except OSError as e:
+                return jsonify({"error": f"拷贝文件到 BiliNote 目录失败: {e}"}), 500
+        url = f"{BILINOTE_CONTAINER_BASE}/uploads/{src_path.name}"
+
     params = {
         "video_url": url,
-        "platform": "bilibili",
+        "platform": platform,
         "quality": data.get("quality", "medium"),
         "model_name": model_name,
         "provider_id": provider_id,
@@ -247,6 +475,18 @@ def process_video():
         params["extras"] = data["extras"]
     if data.get("skip_subtitle"):
         params["skip_subtitle"] = True
+    # 转写配置
+    transcriber_type = data.get("transcriber_type", "").strip()
+    if transcriber_type:
+        params["transcriber_type"] = transcriber_type
+    whisper_model = data.get("whisper_model_size", "").strip()
+    if whisper_model:
+        params["whisper_model_size"] = whisper_model
+    # 视频理解参数
+    if data.get("video_interval"):
+        params["video_interval"] = data.get("video_interval")
+    if data.get("grid_size"):
+        params["grid_size"] = data.get("grid_size")
 
     try:
         resp = requests.post(
@@ -273,6 +513,33 @@ def process_video():
     except requests.RequestException as e:
         app.logger.error("提交到 BiliNote 失败: %s", e)
         return jsonify({"error": f"提交到 BiliNote 失败: {e}"}), 502
+
+
+@app.route("/api/video-duration")
+def video_duration():
+    bvid = request.args.get("bvid", "").strip()
+    file_path = request.args.get("file_path", "").strip()
+    if file_path:
+        dur = _ffprobe_duration(file_path)
+        return jsonify({"duration_seconds": dur})
+    if not bvid:
+        return jsonify({"error": "缺少 bvid 或 file_path 参数"}), 400
+    try:
+        resp = requests.get(
+            f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}",
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://www.bilibili.com/",
+            },
+            timeout=8,
+        )
+        data = resp.json()
+        if data.get("code") != 0:
+            return jsonify({"error": data.get("message", "获取视频信息失败")}), 502
+        duration = data.get("data", {}).get("duration", 0)
+        return jsonify({"duration_seconds": duration})
+    except requests.RequestException as e:
+        return jsonify({"error": f"请求B站API失败: {e}"}), 502
 
 
 @app.route("/api/task-status/<task_id>")
