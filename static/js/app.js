@@ -1871,7 +1871,7 @@ function pollTaskStatus(taskId, timeoutMs) {
                     } catch (e) { clearInterval(interval); reject(new Error("BiliNote 服务不可达，任务终止")); return; }
                     try {
                         var ta = await fetch("/api/bilinote-task-alive/" + taskId); var tad = await ta.json();
-                        if (!tad.alive) { clearInterval(interval); reject(new Error("BiliNote 任务异常（" + (tad.reason || "状态文件丢失") + "），任务终止")); return; }
+                        if (!tad.alive) { clearInterval(interval); reject(new Error("BiliNote 任务状态文件丢失，任务终止")); return; }
                     } catch (e) { /* 任务存活检测失败不中断，继续轮询 */ }
                 }
                 var res = await fetch("/api/task-status/" + taskId); var data = await res.json();
